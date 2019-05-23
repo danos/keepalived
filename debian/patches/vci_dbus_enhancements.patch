@@ -1,0 +1,76 @@
+---
+ keepalived/dbus/org.keepalived.Vrrp1.Instance.xml |    4 +++
+ keepalived/vrrp/vrrp_dbus.c                       |   29 +++++++++++++++++++++-
+ 2 files changed, 32 insertions(+), 1 deletion(-)
+
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
+@@ -34,5 +34,9 @@
+ 	</signal>
+ 	<property type='s' name='Name' access='read' />
+ 	<property type='(us)' name='State' access='read' />
++	<property type='s' name='XmitIntf' access='read' />
++	<property type='b' name='AddressOwner' access='read' />
++	<property type='u' name='LastTransition' access='read' />
++	<property type='s' name='SyncGroup' access='read' />
+   </interface>
+ </node>
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -76,6 +76,10 @@
+ 	DBUS_RESET_MASTER,
+ 	DBUS_GET_NAME,
+ 	DBUS_GET_STATUS,
++	DBUS_GET_XMIT,
++	DBUS_GET_IPAO,
++	DBUS_GET_LAST_TRANSITION,
++	DBUS_GET_SYNC_GROUP
+ } dbus_action_t;
+ 
+ typedef enum dbus_error {
+@@ -327,6 +331,14 @@
+ 		action = DBUS_GET_NAME;
+ 	else if (!g_strcmp0(property_name, "State"))
+ 		action = DBUS_GET_STATUS;
++	else if (!g_strcmp0(property_name, "XmitIntf"))
++		action = DBUS_GET_XMIT;
++	else if (!g_strcmp0(property_name, "AddressOwner"))
++		action = DBUS_GET_IPAO;
++	else if (!g_strcmp0(property_name, "LastTransition"))
++		action = DBUS_GET_LAST_TRANSITION;
++	else if (!g_strcmp0(property_name, "SyncGroup"))
++		action = DBUS_GET_SYNC_GROUP;
+ 	else {
+ 		log_message(LOG_INFO, "Property %s does not exist", property_name);
+ 		return NULL;
+@@ -817,7 +829,11 @@
+ 			}
+ 		}
+ 		else if (ent->action == DBUS_GET_NAME ||
+-			 ent->action == DBUS_GET_STATUS) {
++			 ent->action == DBUS_GET_STATUS ||
++			 ent->action == DBUS_GET_XMIT ||
++			 ent->action == DBUS_GET_IPAO ||
++			 ent->action == DBUS_GET_LAST_TRANSITION ||
++			 ent->action == DBUS_GET_SYNC_GROUP) {
+ 			/* we look for the vrrp instance object that corresponds to our interface and group */
+ 			ent->reply = DBUS_INTERFACE_NOT_FOUND;
+ 
+@@ -829,6 +845,17 @@
+ 					ent->args = g_variant_new("(s)", vrrp->iname);
+ 				else if (ent->action == DBUS_GET_STATUS)
+ 					ent->args = g_variant_new("(us)", vrrp->state, state_str(vrrp->state));
++				else if (ent->action == DBUS_GET_XMIT)
++					ent->args = g_variant_new("(s)", vrrp->xmit_ifp->ifname);
++				else if (ent->action == DBUS_GET_IPAO)
++					ent->args = g_variant_new("(b)", vrrp->addr_owner);
++				else if (ent->action == DBUS_GET_LAST_TRANSITION)
++					ent->args = g_variant_new("(u)", vrrp->last_transition.tv_sec);
++				else if (ent->action == DBUS_GET_SYNC_GROUP)
++					if (vrrp->sync != NULL)
++						ent->args = g_variant_new("(s)", vrrp->sync->iname);
++					else
++						ent->args = g_variant_new("(s)", "");
+ 				else
+ 					ent->args = NULL;	 /* How did we get here? */
+ 				ent->reply = DBUS_SUCCESS;

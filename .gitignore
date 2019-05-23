@@ -35,3 +35,6 @@ stamp-h?
 # lib/config.h.in
 # Makefile.in
 # /configure
+configure.in.debian
+debian/stamp-autotools*
+debian/vyatta-keepalived.debhelper.log
