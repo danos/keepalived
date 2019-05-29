@@ -1,7 +1,7 @@
----
- keepalived/dbus/org.keepalived.Vrrp1.Instance.xml |    4 +++
- keepalived/vrrp/vrrp_dbus.c                       |   29 +++++++++++++++++++++-
- 2 files changed, 32 insertions(+), 1 deletion(-)
+ keepalived/dbus/org.keepalived.Vrrp1.Instance.xml      |    4 
+ keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template |    5 +
+ keepalived/vrrp/vrrp_dbus.c                            |   82 ++++++++++++++++-
+ 3 files changed, 90 insertions(+), 1 deletion(-)
 
 --- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
 +++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
@@ -17,7 +17,15 @@
  </node>
 --- a/keepalived/vrrp/vrrp_dbus.c
 +++ b/keepalived/vrrp/vrrp_dbus.c
-@@ -76,6 +76,10 @@
+@@ -68,6 +68,7 @@
+ 	DBUS_RELOAD,
+ 	DBUS_ADD_DEBUG,
+ 	DBUS_REMOVE_DEBUG,
++	DBUS_GET_RFC_MAPPING,
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 	DBUS_CREATE_INSTANCE,
+ 	DBUS_DESTROY_INSTANCE,
+@@ -76,6 +77,10 @@
  	DBUS_RESET_MASTER,
  	DBUS_GET_NAME,
  	DBUS_GET_STATUS,
@@ -28,7 +36,34 @@
  } dbus_action_t;
  
  typedef enum dbus_error {
-@@ -327,6 +331,14 @@
+@@ -192,6 +197,26 @@
+ 	return NULL;
+ }
+ 
++static vrrp_t *
++get_vrrp_instance_from_xmit_intf(const char *ifname)
++{
++	element e;
++	vrrp_t *vrrp;
++
++	if (LIST_ISEMPTY(vrrp_data->vrrp))
++		return NULL;
++
++	for (e = LIST_HEAD(vrrp_data->vrrp); e; ELEMENT_NEXT(e)) {
++		vrrp = ELEMENT_DATA(e);
++
++		if (!valid_path_cmp(vrrp->xmit_ifp->ifname, ifname) &&
++				valid_path_cmp(vrrp->ifp->ifname, ifname))
++				return vrrp;
++	}
++
++	return NULL;
++}
++
+ static gboolean
+ unregister_object(gpointer key, gpointer value, __attribute__((unused)) gpointer user_data)
+ {
+@@ -327,6 +352,14 @@
  		action = DBUS_GET_NAME;
  	else if (!g_strcmp0(property_name, "State"))
  		action = DBUS_GET_STATUS;
@@ -43,7 +78,67 @@
  	else {
  		log_message(LOG_INFO, "Property %s does not exist", property_name);
  		return NULL;
-@@ -817,7 +829,11 @@
+@@ -366,6 +399,7 @@
+ 	size_t len;
+ 	unsigned family;
+ #endif
++	char *xmit;
+ 	dbus_queue_ent_t ent;
+ 	char ifname_str[sizeof ((vrrp_t*)NULL)->ifp->ifname];
+ 
+@@ -402,6 +436,13 @@
+ 			g_variant_unref(ent.args);
+ 			g_dbus_method_invocation_return_value(invocation, NULL);
+ 		}
++		else if (g_strcmp0(method_name, "GetRfcMapping") == 0) {
++			ent.action = DBUS_GET_RFC_MAPPING;
++			g_variant_get(parameters, "(s)", &xmit);
++			ent.args = g_variant_new("(s)", xmit);
++			process_method_call(&ent);
++			g_dbus_method_invocation_return_value(invocation, ent.args);
++		}
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 		else if (g_strcmp0(method_name, "CreateInstance") == 0) {
+ 			g_variant_get(parameters, "(ssuu)", &iname, &ifname, &ent.vrid, &family);
+@@ -741,6 +782,7 @@
+ {
+ 	dbus_queue_ent_t *ent;
+ 	char recv_buf;
++	gchar *xmit_intf;
+ 	vrrp_t *vrrp;
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 	gchar *name;
+@@ -775,6 +817,29 @@
+ 			vrrp_data->vrrp_debug_flag ^= debug_flag;
+ 			log_message(LOG_INFO, "Debug flag is now 0x%04x", vrrp_data->vrrp_debug_flag);
+ 		}
++		else if (ent->action == DBUS_GET_RFC_MAPPING) {
++			g_variant_get(ent->args, "(s)", &xmit_intf);
++			log_message(LOG_INFO, "Finding Receive interface for interface %s",
++						xmit_intf);
++			vrrp = get_vrrp_instance_from_xmit_intf(xmit_intf);
++			if (NULL != vrrp) {
++				log_message(LOG_INFO, "Found Receive interface %s for Transmit interface %s",
++							vrrp->ifp->ifname, xmit_intf);
++				ent->args = g_variant_new("(sy)",
++								vrrp->ifp->ifname,
++								vrrp->vrid
++								);
++				ent->reply = DBUS_SUCCESS;
++			} else {
++				log_message(LOG_INFO, "%s is not an RFC interface",
++							xmit_intf);
++				ent->reply = DBUS_SUCCESS;
++				ent->args = g_variant_new("(sy)",
++								"",
++								0
++								);
++			}
++		}
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 		else if (ent->action == DBUS_CREATE_INSTANCE) {
+ 			g_variant_get(ent->args, "(s)", &name);
+@@ -817,7 +882,11 @@
  			}
  		}
  		else if (ent->action == DBUS_GET_NAME ||
@@ -56,7 +151,7 @@
  			/* we look for the vrrp instance object that corresponds to our interface and group */
  			ent->reply = DBUS_INTERFACE_NOT_FOUND;
  
-@@ -829,6 +845,17 @@
+@@ -829,6 +898,17 @@
  					ent->args = g_variant_new("(s)", vrrp->iname);
  				else if (ent->action == DBUS_GET_STATUS)
  					ent->args = g_variant_new("(us)", vrrp->state, state_str(vrrp->state));
@@ -74,3 +169,17 @@
  				else
  					ent->args = NULL;	 /* How did we get here? */
  				ent->reply = DBUS_SUCCESS;
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
+@@ -48,6 +48,11 @@
+ 	<method name='RemoveDebug'>
+ 	  <arg type='u' name='DebugFlag'/>
+ 	</method>
++	<method name="GetRfcMapping">
++		<arg name="xmit" type="s" direction="in"/>
++		<arg name="recv" type="s" direction="out" />
++		<arg name="vrid" type="y" direction="out" />
++	</method>
+ C		<!--
+ C		  CreateInstance:
+ C		  @iname: unique name for the new instance.
