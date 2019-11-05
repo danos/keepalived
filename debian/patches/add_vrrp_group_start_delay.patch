@@ -140,7 +140,7 @@
  			sock->thread = thread_add_read(master, vrrp_read_dispatcher_thread,
  						       sock, sock->fd_in, vrrp_timer);
  	}
-@@ -1249,6 +1291,12 @@
+@@ -1255,6 +1297,12 @@
  	/* Dispatcher state handler */
  	if (thread->type == THREAD_READ_TIMEOUT || sock->fd_in == -1)
  		fd = vrrp_dispatcher_read_timeout(sock->fd_in);

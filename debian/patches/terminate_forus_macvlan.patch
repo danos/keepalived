@@ -3,8 +3,8 @@
  keepalived/include/global_data.h |    2 
  keepalived/vrrp/vrrp.c           |  246 +++++++++++++++++++++++++++++++++------
  keepalived/vrrp/vrrp_netlink.c   |    8 +
- keepalived/vrrp/vrrp_scheduler.c |  157 +++++++++++++++++++++++-
- 5 files changed, 377 insertions(+), 44 deletions(-)
+ keepalived/vrrp/vrrp_scheduler.c |  165 ++++++++++++++++++++++++--
+ 5 files changed, 384 insertions(+), 45 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
@@ -351,7 +351,7 @@
  	}
  }
  
-@@ -1044,38 +1050,173 @@
+@@ -1044,38 +1050,179 @@
  	return vrrp->fd_in;
  }
  
@@ -448,12 +448,11 @@
 -	len = recvfrom(sock->fd_in, vrrp_buffer, vrrp_buffer_len, 0,
 -		       (struct sockaddr *) &src_addr, &src_addr_len);
 -	hd = vrrp_get_header(sock->family, vrrp_buffer, &proto);
+-
 +	buffer_len = recvmsg(sock->fd_in, &message, 0);
-+
 +    eth_payload = (void *)
 +                  (vrrp_buffer + sizeof(struct ether_header));
 +    buffer_len = buffer_len - sizeof(struct ether_header);
- 
 +    hd = vrrp_get_header(sock->family, eth_payload, &proto);
  	/* Searching for matching instance */
  	vrrp = vrrp_index_lookup(hd->vrid, sock->fd_in);
@@ -486,11 +485,15 @@
 +                  ipv4_str, sizeof(ipv4_str));
 +        our_address = ip_is_local(ipv4_str, sock->family);
 +
-+        if (our_address) {
-+            /* DROP our own packets */
++		/*
++		 * IPAO mode appears as matching one of our own addresses (on the back up)
++		 * if the received packet matches our effective priority then it's our packet (most likely)
++		 */
++		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
++			/* DROP our own packets */
 +			log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
-+            return sock->fd_in;
-+        }
++			return sock->fd_in;
++		}
 +
 +        /* Record source address in VRRP group */
 +        inet_ip4tosockaddr(&pkt_saddr_ipv4, &vrrp->pkt_saddr);
@@ -508,11 +511,15 @@
 +
 +        our_address = ip_is_local(ipv6_str, sock->family);
 +
-+        if (our_address) {
-+            /* DROP our own packets */
++		/*
++		 * IPAO mode appears as matching one of our own addresses (on the back up)
++		 * if the received packet matches our effective priority then it's our packet (most likely)
++		 */
++		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
++			/* DROP our own packets */
 +			log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
-+            return sock->fd_in;
-+        }
++			return sock->fd_in;
++		}
 +
 +        /* Record source address in VRRP group */
 +        inet_ip6tosockaddr(&ip6h->ip6_src, &vrrp->pkt_saddr);

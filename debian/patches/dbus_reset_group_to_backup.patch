@@ -1,13 +1,17 @@
 ---
+ keepalived/core/global_data.c                     |    9 ++++-
  keepalived/dbus/org.keepalived.Vrrp1.Instance.xml |    7 ++++
  keepalived/include/vrrp.h                         |    2 -
+ keepalived/include/vrrp_netlink.h                 |    1 
  keepalived/include/vrrp_scheduler.h               |    2 -
  keepalived/include/vrrp_sync.h                    |    3 +
  keepalived/vrrp/vrrp.c                            |   12 ++++--
+ keepalived/vrrp/vrrp_daemon.c                     |    5 ++
  keepalived/vrrp/vrrp_dbus.c                       |   38 ++++++++++++++++++++++
+ keepalived/vrrp/vrrp_netlink.c                    |   11 ++----
  keepalived/vrrp/vrrp_scheduler.c                  |   11 +++---
  keepalived/vrrp/vrrp_sync.c                       |   12 +++---
- 8 files changed, 68 insertions(+), 19 deletions(-)
+ 12 files changed, 86 insertions(+), 27 deletions(-)
 
 --- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
 +++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
@@ -214,7 +218,7 @@
  
  		if (vrrp->state == VRRP_STATE_BACK)
  			log_message(LOG_INFO, "VRRP_Instance(%s) Now in BACKUP state",
-@@ -1205,6 +1205,7 @@
+@@ -1203,6 +1203,7 @@
  
      /* If no instance found => ignore the advert */
  	if (!vrrp) {
@@ -280,3 +284,86 @@
 -
 +void vrrp_smtp_notifier(vrrp_t *);
  #endif
+--- a/keepalived/core/global_data.c
++++ b/keepalived/core/global_data.c
+@@ -177,8 +177,12 @@
+ #endif
+ #endif
+ 	new->local_addresses = NULL;
+-	getifaddrs(&(new->local_addresses));
+-
++	if (getifaddrs(&(new->local_addresses)) == -1) {
++		log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
++		free_list(&new->email);
++		FREE(new);
++		return NULL;
++	}
+ 	return new;
+ }
+ 
+@@ -239,6 +243,7 @@
+ 		FREE_PTR(network_namespace);
+ #endif
+ 	FREE(data);
++	data = NULL;
+ }
+ 
+ void
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -171,6 +171,11 @@
+ 	ndisc_init();
+ 
+ 	global_data = alloc_global_data();
++	if (global_data == NULL){
++		stop_vrrp(KEEPALIVED_EXIT_FATAL);
++		return;
++	}
++	netlink_address_lookup();
+ 
+ #ifdef _HAVE_LIBIPTC_
+ 	iptables_init();
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -551,7 +551,9 @@
+ 			freeifaddrs(global_data->local_addresses);
+ 			global_data->local_addresses = NULL;
+ 		}
+-		getifaddrs(&(global_data->local_addresses));
++		if (getifaddrs(&(global_data->local_addresses)) == -1) {
++			log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
++		}
+ 	}
+ 	return 0;
+ }
+@@ -948,8 +950,8 @@
+ 	return status;
+ }
+ 
+-/* Adresses lookup bootstrap function */
+-static int
++/* Address lookup bootstrap function */
++int
+ netlink_address_lookup(void)
+ {
+ 	nl_handle_t nlh;
+@@ -1104,9 +1106,6 @@
+ void
+ kernel_netlink_init(void)
+ {
+-	/* Start with a netlink address lookup */
+-	netlink_address_lookup();
+-
+ 	/*
+ 	 * Prepare netlink kernel broadcast channel
+ 	 * subscribtion. We subscribe to LINK and ADDR
+--- a/keepalived/include/vrrp_netlink.h
++++ b/keepalived/include/vrrp_netlink.h
+@@ -84,6 +84,7 @@
+ extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
+ extern int netlink_interface_lookup(void);
+ extern int netlink_refresh_state(thread_t *);
++extern int netlink_address_lookup(void);
+ extern void kernel_netlink_poll(void);
+ extern void kernel_netlink_init(void);
+ extern void kernel_netlink_close(void);

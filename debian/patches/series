@@ -43,3 +43,5 @@ resync_on_ENOBUFF.patch
 add_vrrp_group_start_delay.patch
 reduce_msdowntimer_when_invalid_adv_recv.patch
 dbus_reset_group_to_backup.patch
+add-route-to-tracking.patch
+per_packet_debugging.patch

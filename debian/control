@@ -23,7 +23,7 @@ Section: admin
 Architecture: any
 Replaces:
  keepalived,
- vyatta-keepalived (<=1.2.24-git66c870aa+vyatta23.1)
+ vyatta-keepalived (<=1.2.24-git66c870aa+vyatta26)
 Depends: ${shlibs:Depends},
  ipvsadm,
  iproute,
