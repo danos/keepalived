@@ -1,0 +1,100 @@
+---
+ keepalived/vrrp/vrrp_scheduler.c |   45 ++++++++++++++++++++++++++-------------
+ 1 file changed, 31 insertions(+), 14 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -446,7 +446,8 @@
+ 
+ /* VRRP dispatcher functions */
+ static int
+-already_exist_sock(list l, sa_family_t family, int proto, ifindex_t ifindex, bool unicast)
++already_exist_sock(list l, sa_family_t family, int proto, ifindex_t r_ifindex,
++        ifindex_t t_ifindex, bool unicast)
+ {
+ 	sock_t *sock;
+ 	element e;
+@@ -455,7 +456,8 @@
+ 		sock = ELEMENT_DATA(e);
+ 		if ((sock->family == family)	&&
+ 		    (sock->proto == proto)	&&
+-		    (sock->recv_ifindex == ifindex)	&&
++		    (sock->recv_ifindex == r_ifindex)	&&
++		    (sock->xmit_ifindex == t_ifindex)	&&
+ 		    (sock->unicast == unicast))
+ 			return 1;
+ 	}
+@@ -497,13 +499,16 @@
+ #endif
+ 										    IF_INDEX(vrrp->ifp);
+ #ifdef _HAVE_VRRP_VMAC_
+-                if (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) {
+-                    recv_ifindex = IF_INDEX(vrrp->ifp);
+-                    xmit_ifindex = vrrp->vmac_ifindex;
+-                } else {
+-                    recv_ifindex = IF_INDEX(vrrp->ifp);
+-                    xmit_ifindex = recv_ifindex;
+-                }
++                recv_ifindex =
++                    (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ?
++                    IF_BASE_INDEX(vrrp->ifp) : IF_INDEX(vrrp->ifp);
++
++                xmit_ifindex =
++                    (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) ?
++                    vrrp->vmac_ifindex : recv_ifindex;
++#else
++                recv_ifindex = ifindex;
++                xmit_ifindex = ifindex;
+ #endif
+                 unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
+ #if defined _WITH_VRRP_AUTH_
+@@ -514,8 +519,9 @@
+ 			proto = IPPROTO_VRRP;
+ 
+ 		/* add the vrrp element if not exist */
+-		if (!already_exist_sock(l, vrrp->family, proto, recv_ifindex, unicast))
+-			alloc_sock(vrrp->family, l, proto, recv_ifindex, xmit_ifindex, unicast);
++		if (!already_exist_sock(l, vrrp->family, proto, recv_ifindex,
++					xmit_ifindex, unicast))
++			alloc_sock(vrrp->family, l, proto, ifindex, recv_ifindex, xmit_ifindex, unicast);
+ 	}
+ }
+ 
+@@ -546,7 +552,7 @@
+ 	element e_sock;
+ 	element e_vrrp;
+ 	int proto;
+-	ifindex_t ifindex;
++	ifindex_t ifindex, recv_ifindex, xmit_ifindex;
+ 	bool unicast;
+ 
+ 	for (e_sock = LIST_HEAD(l); e_sock; ELEMENT_NEXT(e_sock)) {
+@@ -558,6 +564,17 @@
+ 				  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
+ #endif
+ 											    IF_INDEX(vrrp->ifp);
++#ifdef _HAVE_VRRP_VMAC_
++                    recv_ifindex =
++                        (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ?
++                        IF_BASE_INDEX(vrrp->ifp) : IF_INDEX(vrrp->ifp);
++
++                    xmit_ifindex = (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) ?
++                        vrrp->vmac_ifindex : recv_ifindex;
++#else
++                    recv_ifindex = ifindex;
++                    xmit_ifindex = ifindex;
++#endif
+ 			unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
+ #if defined _WITH_VRRP_AUTH_
+ 			if (vrrp->version == VRRP_VERSION_2 && vrrp->auth_type == VRRP_AUTH_AH)
+@@ -566,8 +583,8 @@
+ #endif
+ 				proto = IPPROTO_VRRP;
+ 
+-			if ((sock->ifindex == ifindex)	&&
+-                            (sock->recv_ifindex == IF_INDEX(vrrp->ifp)) &&
++			if ((sock->recv_ifindex == recv_ifindex) &&
++                            (sock->xmit_ifindex == xmit_ifindex) &&
+ 			    (sock->family == vrrp->family) &&
+ 			    (sock->proto == proto)	&&
+ 			    (sock->unicast == unicast)) {

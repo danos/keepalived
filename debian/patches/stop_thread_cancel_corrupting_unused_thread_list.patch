@@ -1,0 +1,20 @@
+---
+ lib/scheduler.c |    7 +++++++
+ 1 file changed, 7 insertions(+)
+
+--- a/lib/scheduler.c
++++ b/lib/scheduler.c
+@@ -502,6 +502,13 @@
+ 	default:
+ 		log_message(LOG_INFO, "Cancel of unhandled type %d",
+ 				      thread->type);
++		/*
++		 * Unused threads are already on the unuse list, adding them
++		 * for a second time will corrupt the list.
++		 */
++		if (thread->type == THREAD_UNUSED)
++			return;
++
+ 		break;
+ 	}
+ 

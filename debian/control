@@ -1,0 +1,53 @@
+Source: keepalived
+Section: admin
+Priority: optional
+Maintainer: Vyatta Package Maintainers <DL-vyatta-help@att.com>
+Build-Depends: debhelper (>= 9),
+ dh-systemd (>= 1.3),
+ dh-autoreconf,
+ libssl1.0-dev | libssl-dev,
+ libpopt-dev,
+ autoconf,
+ libglib2.0-dev,
+ libnl-3-dev,
+ libnl-genl-3-dev,
+ libnl-route-3-dev,
+ libnl-nf-3-dev,
+ libnfnetlink-dev,
+ libsnmp-dev-vyatta,
+ pkg-config
+Standards-Version: 3.9.8
+
+Package: keepalived
+Section: admin
+Architecture: any
+Replaces:
+ keepalived,
+ vyatta-keepalived (<=1.2.24-git66c870aa+vyatta23.1)
+Depends: ${shlibs:Depends},
+ ipvsadm,
+ iproute,
+ ${misc:Depends}
+Description: Failover and monitoring daemon for LVS clusters
+ keepalived is used for monitoring real servers within a Linux
+ Virtual Server (LVS) cluster.  keepalived can be configured to
+ remove real servers from the cluster pool if it stops responding,
+ as well as send a notification email to make the admin aware of
+ the service failure.
+ .
+ In addition, keepalived implements an independent Virtual Router
+ Redundancy Protocol (VRRPv2; see rfc2338 for additional info)
+ framework for director failover.
+ .
+ You need a kernel >= 2.4.28 or >= 2.6.11 for keepalived.
+ See README.Debian for more information.
+
+Package: keepalived-dbg
+Architecture: any
+Section: debug
+Priority: extra
+Depends:
+ keepalived (= ${binary:Version}),
+ ${misc:Depends}
+Description: Debugging symbols package for keepalived.
+ Separated debugging symbols of the vyatta-keepalived package.

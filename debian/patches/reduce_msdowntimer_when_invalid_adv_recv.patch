@@ -1,0 +1,33 @@
+---
+ keepalived/vrrp/vrrp.c |    9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1588,6 +1588,7 @@
+ 	ssize_t ret = 0;
+ 	unsigned master_adver_int, proto;
+ 	bool check_addr = false;
++	timeval_t new_ms_down_timer;
+ 
+ 	/* Process the incoming packet */
+ 	hd = vrrp_get_header(vrrp->family, buf, &proto);
+@@ -1606,13 +1607,15 @@
+ 	}
+ 	ret = vrrp_check_packet(vrrp, buf, buflen, check_addr);
+ 
+-	if (ret == VRRP_PACKET_KO || ret == VRRP_PACKET_NULL || ret == VRRP_PACKET_DROP) {
++	if (ret != VRRP_PACKET_OK) {
+ 		log_message(LOG_INFO, "VRRP_Instance(%s) ignoring received advertisment..."
+ 				    ,  vrrp->iname);
++		set_time_now();
++		new_ms_down_timer = timer_sub(vrrp->sands, time_now);
+ 		if (vrrp->version == VRRP_VERSION_3)
+-			vrrp->ms_down_timer = 3 * vrrp->master_adver_int + VRRP_TIMER_SKEW(vrrp);
++			vrrp->ms_down_timer = new_ms_down_timer.tv_sec < 0 ? 0 : (uint32_t)(new_ms_down_timer.tv_sec * TIMER_CENTI_HZ + new_ms_down_timer.tv_usec);
+ 		else
+-			vrrp->ms_down_timer = 3 * vrrp->adver_int + VRRP_TIMER_SKEW(vrrp);
++			vrrp->ms_down_timer = new_ms_down_timer.tv_sec < 0 ? 0 : (uint32_t)(new_ms_down_timer.tv_sec * TIMER_HZ + new_ms_down_timer.tv_usec);
+ 	} else if (hd->priority == 0) {
+ 		vrrp->ms_down_timer = VRRP_TIMER_SKEW(vrrp);
+ #ifdef _WITH_SNMP_RFCV3_

@@ -1,0 +1,5 @@
+keepalived (1.2.24-git66c870aa+vyatta23.1.1) unstable; urgency=medium
+
+  * DANOS Import
+
+ -- Vyatta Package Maintainers <DL-vyatta-help@att.com> Thu, 31 Oct 2019 23:00:00 +0000

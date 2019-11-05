@@ -1,0 +1,67 @@
+---
+ keepalived/vrrp/vrrp.c        |    7 +++----
+ keepalived/vrrp/vrrp_parser.c |    5 +++--
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1572,7 +1572,7 @@
+ 		return 0;
+ 	}
+ 
+-	/* If we are configured as the address owner (priority == 255), and we receive an advertisement 
++	/* If we are configured as the address owner (priority == 255), and we receive an advertisement
+ 	 * from another system indicating it is also the address owner, then there is a clear conflict.
+ 	 * Report a configuration error, and drop our priority as a workaround. */
+ 	if (hd->priority == VRRP_PRIO_OWNER &&
+@@ -1892,7 +1892,7 @@
+ 			vrrp->version = VRRP_VERSION_3;
+ 		}
+ 		else if (!vrrp->version)
+-			vrrp->version = VRRP_VERSION_3;
++			vrrp->version = global_data->vrrp_version;
+ 	}
+ 
+ 	/* Default to IPv4. This can only happen if no VIPs are specified. */
+@@ -1900,7 +1900,7 @@
+ 		vrrp->family = AF_INET;
+ 
+ 	if (vrrp->version == 0) {
+-		if (vrrp->family == AF_INET6)
++		if (vrrp->family == AF_INET6 && vrrp->strict_mode)
+ 			vrrp->version = VRRP_VERSION_3;
+ 		else
+ 			vrrp->version = global_data->vrrp_version;
+@@ -2694,4 +2694,3 @@
+ 		}
+ 	}
+ }
+-
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -226,7 +226,6 @@
+ 	}
+ 
+ 	vrrp->family = AF_INET6;
+-	vrrp->version = VRRP_VERSION_3;
+ }
+ static void
+ vrrp_state_handler(vector_t *strvec)
+@@ -694,6 +693,8 @@
+ {
+ 	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+ 	uint8_t version = (uint8_t)strtoul(vector_slot(strvec, 1), NULL, 10);
++	bool using_strict = ((vrrp->strict_mode== true|| global_data->vrrp_strict)? \
++			true : false);
+ 
+ 	if (VRRP_IS_BAD_VERSION(version)) {
+ 		log_message(LOG_INFO, "VRRP Error : Version not valid !");
+@@ -702,7 +703,7 @@
+ 	}
+ 
+ 	if ((vrrp->version && vrrp->version != version) ||
+-	    (version == VRRP_VERSION_2 && vrrp->family == AF_INET6)) {
++	    (version == VRRP_VERSION_2 && vrrp->family == AF_INET6 && using_strict)) {
+ 		log_message(LOG_INFO, "(%s): vrrp_version conflicts with configured or deduced version; ignoring.", vrrp->iname);
+ 		return;
+ 	}

@@ -1,0 +1,26 @@
+---
+ keepalived/vrrp/vrrp.c |   11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1486,8 +1486,19 @@
+ 			}
+ 		}
+ 	} else {
++		log_message(LOG_INFO, "VRRP_Instance(%s) received a lower priority "
++				"advertisement. %d from packet against %d effective locally."
++				, vrrp->iname, hd->priority, vrrp->effective_priority);
+ 		log_message(LOG_INFO, "VRRP_Instance(%s) forcing a new MASTER election" , vrrp->iname);
+ 		vrrp->wantstate = VRRP_STATE_GOTO_MASTER;
++		/*
++		 * Our rfc code tries to send an advertisement out of an interface that
++		 * isn't active. Even without RFC mode we should come up as master.
++		 * As we can premept this packet we've received we should go into the
++		 * Master state.
++		 */
++		vrrp_state_goto_master(vrrp);
++		vrrp_state_become_master(vrrp);
+ 		vrrp_send_adv(vrrp, vrrp->effective_priority);
+ #ifdef _WITH_SNMP_RFCV3_
+ 		vrrp->stats->master_reason = VRRPV3_MASTER_REASON_PREEMPTED;

@@ -1,0 +1,155 @@
+---
+ keepalived/include/vrrp.h        |    2 +
+ keepalived/vrrp/vrrp.c           |    6 ++++
+ keepalived/vrrp/vrrp_parser.c    |    8 ++++++
+ keepalived/vrrp/vrrp_print.c     |    3 ++
+ keepalived/vrrp/vrrp_scheduler.c |   50 ++++++++++++++++++++++++++++++++++++++-
+ 5 files changed, 68 insertions(+), 1 deletion(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -217,6 +217,8 @@
+ 							 * prio is allowed.  0 means no delay.
+ 							 */
+ 	timeval_t		preempt_time;		/* Time after which preemption can happen */
++	unsigned long		start_delay;		/* Seconds*TIMER_HZ after startup until we
++								 * begin the FSM for this group*/
+ 	int			state;			/* internal state (init/backup/master) */
+ 	int			init_state;		/* the initial state of the instance */
+ 	int			wantstate;		/* user explicitly wants a state (back/mast) */
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2604,6 +2604,12 @@
+ 	    !vrrp->ifp->reset_promote_secondaries)
+ 		set_promote_secondaries(vrrp->ifp);
+ 
++	/*
++	 * Set start_delay to zero if it wasn't in the config
++	 */
++	if (vrrp->start_delay == PARAMETER_UNSET) {
++		vrrp->start_delay = 0;
++	}
+ 	/* If we are adding a large number of interfaces, the netlink socket
+ 	 * may run out of buffers if we don't receive the netlink messages
+ 	 * as we progress */
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -432,6 +432,13 @@
+ 	vrrp->preempt_time = timer_add_long(timer_now(), vrrp->preempt_delay);
+ }
+ static void
++vrrp_start_delay_handler(vector_t *strvec)
++{
++	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
++	unsigned long start_delay = strtoul(vector_slot(strvec, 1), NULL, 10);
++	vrrp->start_delay = start_delay * TIMER_HZ;
++}
++static void
+ vrrp_notify_backup_handler(vector_t *strvec)
+ {
+ 	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+@@ -900,6 +907,7 @@
+ 	install_keyword("preempt", &vrrp_preempt_handler);
+ 	install_keyword("nopreempt", &vrrp_nopreempt_handler);
+ 	install_keyword("preempt_delay", &vrrp_preempt_delay_handler);
++	install_keyword("start_delay", &vrrp_start_delay_handler);
+ 	install_keyword("debug", &vrrp_debug_handler);
+ 	install_keyword("notify_backup", &vrrp_notify_backup_handler);
+ 	install_keyword("notify_master", &vrrp_notify_master_handler);
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -333,6 +333,9 @@
+ 	if (vrrp->preempt_delay)
+ 		fprintf(file, "   Preempt delay = %ld secs\n",
+ 		       vrrp->preempt_delay / TIMER_HZ);
++	if (vrrp->start_delay)
++		fprintf(file, "   Start delay = %lu secs\n",
++		       vrrp->start_delay / TIMER_HZ);
+ #if defined _WITH_VRRP_AUTH_
+ 	if (vrrp->auth_type) {
+ 		fprintf(file, "   Authentication type = %s\n",
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -369,6 +369,41 @@
+ 	return timer;
+ }
+ 
++static unsigned long
++vrrp_compute_start_delay(const int fd)
++{
++	vrrp_t *vrrp;
++	element e;
++	list l = &vrrp_data->vrrp_index_fd[fd%1024 + 1];
++	unsigned long delay = 0;
++
++	if (LIST_ISEMPTY(l)) {
++		log_message(LOG_ALERT, "vrrp_index_fd list is empty, this is probably wrong");
++		return 0;
++	}
++
++	/* Multiple instances on the same interface
++	 * Because of the way the FSM/scheduler works the timer delays are based
++	 * on the interface FD, which is shared between groups, rather than
++	 * individual groups. This means that if one group has a delay, all
++	 * groups have a delay. Because of that we need to take the max value
++	 * in the list
++	 */
++	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++		vrrp = ELEMENT_DATA(e);
++		delay = MAX(delay, vrrp->start_delay);
++	}
++
++	/* Update the start delay timers to be the max value found on the interface */
++	if (delay != 0 && LIST_SIZE(l) > 1) {
++		for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++			vrrp = ELEMENT_DATA(e);
++			vrrp->start_delay = delay;
++		}
++	}
++	return delay;
++}
++
+ unsigned long
+ vrrp_timer_fd(const int fd)
+ {
+@@ -413,6 +448,7 @@
+ 	sock_t *sock;
+ 	timeval_t timer;
+ 	unsigned long vrrp_timer = 0;
++	unsigned long delay_timer = 0;
+ 	element e;
+ 
+ 	/* Init compute timer */
+@@ -433,12 +469,18 @@
+ 		sock = ELEMENT_DATA(e);
+ 		/* jump to asynchronous handling */
+ 		vrrp_timer = vrrp_timer_fd(sock->fd_in);
++		delay_timer = vrrp_compute_start_delay(sock->fd_in);
+ 
+ 		/* Register a timer thread if interface is shut */
+ 		if (sock->fd_in == -1)
+ 			sock->thread = thread_add_timer(master, vrrp_read_dispatcher_thread,
+ 							sock, vrrp_timer);
+-		else
++		else if (delay_timer != 0) {
++			log_message(LOG_INFO, "Setting a start up delay of %lu second(s) for ALL groups on interface %s",
++				delay_timer/TIMER_HZ, IF_NAME(if_get_by_ifindex(sock->ifindex)));
++			sock->thread = thread_add_timer(master, vrrp_read_dispatcher_thread,
++							sock, delay_timer);
++		} else
+ 			sock->thread = thread_add_read(master, vrrp_read_dispatcher_thread,
+ 						       sock, sock->fd_in, vrrp_timer);
+ 	}
+@@ -1249,6 +1291,12 @@
+ 	/* Dispatcher state handler */
+ 	if (thread->type == THREAD_READ_TIMEOUT || sock->fd_in == -1)
+ 		fd = vrrp_dispatcher_read_timeout(sock->fd_in);
++	else if (thread->type == THREAD_READY)
++		/*
++		 * Catch start delay threads, and kick them off in same manner
++		 * as in the register worker function
++		 */
++		fd = sock->fd_in;
+ 	else
+ 		fd = vrrp_dispatcher_read(sock);
+ 

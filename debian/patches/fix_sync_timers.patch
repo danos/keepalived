@@ -1,0 +1,243 @@
+---
+ keepalived/include/vrrp.h           |    1 
+ keepalived/include/vrrp_scheduler.h |    2 
+ keepalived/include/vrrp_sync.h      |    1 
+ keepalived/vrrp/vrrp.c              |    2 
+ keepalived/vrrp/vrrp_scheduler.c    |    8 +-
+ keepalived/vrrp/vrrp_sync.c         |  100 +++++++++++++++++++++++++++++++++++-
+ 6 files changed, 107 insertions(+), 7 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -328,6 +328,7 @@
+ extern void vrrp_state_backup(vrrp_t *, char *, ssize_t);
+ extern void vrrp_state_goto_master(vrrp_t *);
+ extern void vrrp_state_leave_master(vrrp_t *);
++void vrrp_state_become_master(vrrp_t *);
+ extern bool vrrp_complete_init(void);
+ #ifdef _WITH_LVS_
+ extern bool vrrp_ipvs_needed(void);
+--- a/keepalived/include/vrrp_sync.h
++++ b/keepalived/include/vrrp_sync.h
+@@ -50,5 +50,6 @@
+ extern void vrrp_sync_master(vrrp_t *);
+ extern void vrrp_sync_master_election(vrrp_t *);
+ extern void vrrp_sync_fault(vrrp_t *);
++void vrrp_sync_become_master(vrrp_t *);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1205,7 +1205,7 @@
+ }
+ 
+ /* becoming master */
+-static void
++void
+ vrrp_state_become_master(vrrp_t * vrrp)
+ {
+         if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -94,8 +94,6 @@
+ static int vrrp_script_child_thread(thread_t * thread);
+ static int vrrp_script_thread(thread_t * thread);
+ 
+-static int vrrp_read_dispatcher_thread(thread_t *);
+-
+ static struct {
+ 	void (*read) (vrrp_t *, char *, ssize_t);
+ 	void (*read_timeout) (vrrp_t *);
+@@ -154,7 +152,7 @@
+   { {NULL}, {NULL},                      {NULL},             {NULL}            },
+   { {NULL}, {vrrp_sync_master_election}, {vrrp_sync_master}, {vrrp_sync_fault} },
+   { {NULL}, {vrrp_sync_backup},          {vrrp_sync_master}, {vrrp_sync_fault} },
+-  { {NULL}, {vrrp_sync_backup},          {vrrp_sync_master}, {vrrp_sync_fault} }
++  { {NULL}, {vrrp_sync_backup},          {vrrp_sync_become_master}, {vrrp_sync_fault} }
+ };
+ 
+ /* SMTP alert notifier */
+@@ -369,7 +367,7 @@
+ 	return timer;
+ }
+ 
+-static unsigned long
++unsigned long
+ vrrp_timer_fd(const int fd)
+ {
+ 	timeval_t timer;
+@@ -1091,7 +1089,7 @@
+ }
+ 
+ /* Our read packet dispatcher */
+-static int
++int
+ vrrp_read_dispatcher_thread(thread_t * thread)
+ {
+ 	unsigned long vrrp_timer;
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -26,6 +26,7 @@
+ #include "vrrp_if.h"
+ #include "vrrp_notify.h"
+ #include "vrrp_data.h"
++#include "vrrp_scheduler.h"
+ #ifdef _WITH_SNMP_
+   #include "vrrp_snmp.h"
+ #endif
+@@ -217,6 +218,56 @@
+ 	return 1;
+ }
+ 
++static sock_t *
++vrrp_sync_get_socket(vrrp_t * vrrp)
++{
++    sock_t * socket;
++    list l = vrrp_data->vrrp_socket_pool;
++    element e;
++    log_message(LOG_INFO, "VRRP (%s) recv_ifindex: %d xmit_ifindex: %d"
++                          " fd_in: %d fd_out: %d", vrrp->iname,
++                          vrrp->ifp->ifindex,
++                          vrrp->xmit_ifp->ifindex, vrrp->fd_in,
++                          vrrp->fd_out);
++
++    for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++        socket = ELEMENT_DATA(e);
++        log_message(LOG_INFO, "Socket recv_ifindex: %d xmit_ifindex: %d"
++                              " fd_in: %d fd_out: %d", socket->recv_ifindex,
++                              socket->xmit_ifindex, socket->fd_in,
++                              socket->fd_out);
++        if (socket->recv_ifindex == vrrp->ifp->ifindex
++            && socket->xmit_ifindex == vrrp->xmit_ifp->ifindex
++            && socket->fd_in == vrrp->fd_in
++            && socket->fd_out == vrrp->fd_out) {
++                log_message(LOG_INFO, "Found a socket that matches the VRRP"
++                            " group.");
++                return socket;
++        }
++    }
++    return NULL;
++}
++
++static void
++vrrp_sync_update_thread(vrrp_t *sync_vrrp) {
++    sock_t *socket;
++    long vrrp_timer = 0;
++
++    socket = vrrp_sync_get_socket(sync_vrrp);
++    if (!socket)
++	    return;
++
++    thread_cancel(socket->thread);
++    vrrp_timer = vrrp_timer_fd(socket->fd_in);
++    if (socket->fd_in == -1)
++        socket->thread = thread_add_timer(master,
++            vrrp_read_dispatcher_thread, socket, vrrp_timer);
++    else
++        socket->thread = thread_add_read(master,
++            vrrp_read_dispatcher_thread, socket, socket->fd_in,
++            vrrp_timer);
++}
++
+ void
+ vrrp_sync_master_election(vrrp_t * vrrp)
+ {
+@@ -232,6 +283,9 @@
+ 
+ 	log_message(LOG_INFO, "VRRP_Group(%s) Transition to MASTER state",
+ 	       GROUP_NAME(vgroup));
++        log_message(LOG_INFO,
++                "VRRP_Group(%s) forcing a new master election",
++                GROUP_NAME(vgroup));
+ 
+ 	/* Perform sync index */
+ 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+@@ -242,7 +296,21 @@
+ 			log_message(LOG_INFO,
+ 			       "VRRP_Instance(%s) forcing a new MASTER election",
+ 			       isync->iname);
+-			vrrp_send_adv(isync, isync->effective_priority);
++                        isync->wantstate = VRRP_STATE_MAST;
++                        vrrp_state_goto_master(isync);
++                        /*
++                         * We have to call vrrp_state_become_master here because
++                         * in the vyatta rfc implementation the interface will
++                         * not be active with an IP address on it (this may not
++                         * be applicable for non-vyatta systems). When we
++                         * attempt to send without the setup being done in the
++                         * vrrp_state_become_master function the advertisement
++                         * doesn't make it on to the wire.
++                         */
++    		        vrrp_state_become_master(isync);
++                        vrrp_send_adv(isync, isync->effective_priority);
++                        vrrp_init_instance_sands(isync);
++                        vrrp_sync_update_thread(isync);
+ 		}
+ 	}
+ }
+@@ -268,6 +336,7 @@
+ 			isync->wantstate = VRRP_STATE_BACK;
+ 			vrrp_state_leave_master(isync);
+ 			vrrp_init_instance_sands(isync);
++                        vrrp_sync_update_thread(isync);
+ 		}
+ 	}
+ 	vgroup->state = VRRP_STATE_BACK;
+@@ -302,7 +371,9 @@
+ 		if (isync != vrrp && isync->state != VRRP_STATE_MAST) {
+ 			isync->wantstate = VRRP_STATE_MAST;
+ 			vrrp_state_goto_master(isync);
++                        vrrp_state_master_tx(isync, 0);
+ 			vrrp_init_instance_sands(isync);
++                        vrrp_sync_update_thread(isync);
+ 		}
+ 	}
+ 	vgroup->state = VRRP_STATE_MAST;
+@@ -342,6 +413,8 @@
+ 				isync->wantstate = VRRP_STATE_GOTO_FAULT;
+ 			if (isync->state == VRRP_STATE_BACK)
+ 				isync->state = VRRP_STATE_FAULT;
++                        vrrp_state_leave_master(isync);
++                        vrrp_init_instance_sands(isync);
+ 		}
+ 	}
+ 	vgroup->state = VRRP_STATE_FAULT;
+@@ -350,3 +423,28 @@
+ 	vrrp_snmp_group_trap(vgroup);
+ #endif
+ }
++
++/* Transition to master state from fault */
++void
++vrrp_sync_become_master(vrrp_t * vrrp)
++{
++	vrrp_t *isync;
++	vrrp_sgroup_t *vgroup = vrrp->sync;
++	list l = vgroup->index_list;
++	element e;
++
++	if (GROUP_STATE(vgroup) == VRRP_STATE_MAST ||
++            GROUP_STATE(vgroup) == VRRP_STATE_GOTO_MASTER)
++		return;
++
++	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++		isync = ELEMENT_DATA(e);
++		if (isync != vrrp && (isync->wantstate != VRRP_STATE_GOTO_MASTER &&
++		                      isync->wantstate != VRRP_STATE_MAST)) {
++                    isync->wantstate = VRRP_STATE_MAST;
++                    vrrp_state_goto_master(isync);
++                    vrrp_init_instance_sands(isync);
++                    vrrp_sync_update_thread(isync);
++		}
++	}
++}
+--- a/keepalived/include/vrrp_scheduler.h
++++ b/keepalived/include/vrrp_scheduler.h
+@@ -67,5 +67,7 @@
+ extern int vrrp_lower_prio_gratuitous_arp_thread(thread_t *);
+ extern void vrrp_set_effective_priority(vrrp_t *, uint8_t);
+ extern int vrrp_arp_thread(thread_t *);
++int vrrp_read_dispatcher_thread(thread_t *);
++unsigned long vrrp_timer_fd(int);
+ 
+ #endif

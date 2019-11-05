@@ -1,0 +1,117 @@
+---
+ keepalived/vrrp/vrrp.c           |    4 ++--
+ keepalived/vrrp/vrrp_scheduler.c |   32 +++++++++++++++++++++++++++++---
+ keepalived/vrrp/vrrp_sync.c      |   26 ++++++++++++++++++--------
+ 3 files changed, 49 insertions(+), 13 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -701,13 +701,32 @@
+ static void
+ vrrp_leave_master(vrrp_t * vrrp, char *buffer, ssize_t len)
+ {
++    int ret;
++
+ 	if (!VRRP_ISUP(vrrp)) {
+ 		vrrp_log_int_down(vrrp);
+ 		vrrp->wantstate = VRRP_STATE_GOTO_FAULT;
+ 		vrrp_state_leave_master(vrrp);
+-	} else if (vrrp_state_master_rx(vrrp, buffer, len)) {
+-		vrrp_state_leave_master(vrrp);
+-		vrrp_smtp_notifier(vrrp);
++        return;
++	}
++
++    ret = vrrp_state_master_rx(vrrp, buffer, len);
++
++    if (ret == 1) {
++        vrrp_state_leave_master(vrrp);
++        vrrp_smtp_notifier(vrrp);
++    } else if (ret == VRRP_PACKET_DROP) {
++        log_message(LOG_INFO, "VRRP_Instance(%s), ignoring rcvd packet",
++                                vrrp->iname);
++    }
++    else {
++		/*
++		 * If we're up, and the packet we received is preemptible
++		 * assert that we are the correct MASTER and immediately
++		 * transmit an advertisement to quell the operation of the
++		 * erroneous, lower-priority MASTER
++		 */
++		vrrp_master(vrrp);
+ 	}
+ }
+ 
+@@ -799,6 +818,13 @@
+ 	/* handle master state transition */
+ 	vrrp->wantstate = VRRP_STATE_MAST;
+ 	vrrp_state_goto_master(vrrp);
++
++        /*
++         * Immediately send a VRRP advertisement to the multicast
++         * address to assert that we are now operating as the session
++         * MASTER
++         */
++        vrrp_master(vrrp);
+ }
+ 
+ /* Delayed gratuitous ARP thread */
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -38,18 +38,28 @@
+ {
+ 	set_time_now();
+ 
+-	if (vrrp->state == VRRP_STATE_MAST	  ||
+-	    vrrp->state == VRRP_STATE_GOTO_MASTER ||
+-	    vrrp->state == VRRP_STATE_GOTO_FAULT  ||
+-	    vrrp->wantstate == VRRP_STATE_GOTO_MASTER) {
+-// TIMER  - GOTO_MASTER shouldn't be adver_int. Look at circumstances to set GOTO_MASTER
+-// i) backup and expire timer
+-// ii) backup and receive prio 0
+-// iii) master and receive higher prio advert
++        /*
++         * When in MASTER state the expiry time for the group controls when
++         * advertisements are transmitted.
++         * As such, sets the expiry to one advertisement interval from now
++         */
++        if (vrrp->state == VRRP_STATE_MAST) {
+ 		vrrp->sands = timer_add_long(time_now, vrrp->adver_int);
+ 		return;
+ 	}
+ 
++        /*
++         * When not in MASTER state, but transitioning to MASTER state (e.g
++         * wantstate is GOTO_MASTER, which occurs when a preemptable packet is
++         * received), the timer should not be updated to allow the Master Down
++         * Timer to expire.
++         */
++        if (vrrp->state == VRRP_STATE_GOTO_MASTER ||
++                vrrp->state == VRRP_STATE_GOTO_FAULT ||
++                vrrp->wantstate == VRRP_STATE_GOTO_MASTER) {
++            return;
++        }
++
+ 	/*
+ 	 * When in the BACKUP state the expiry timer should be updated to
+ 	 * time_now plus the Master Down Timer, when a non-preemptable packet is
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1432,7 +1432,7 @@
+ 	}
+ 	ret = vrrp_check_packet(vrrp, buf, buflen, check_addr);
+ 
+-	if (ret == VRRP_PACKET_KO || ret == VRRP_PACKET_NULL) {
++	if (ret == VRRP_PACKET_KO || ret == VRRP_PACKET_NULL || ret == VRRP_PACKET_DROP) {
+ 		log_message(LOG_INFO, "VRRP_Instance(%s) ignoring received advertisment..."
+ 				    ,  vrrp->iname);
+ 		if (vrrp->version == VRRP_VERSION_3)
+@@ -1571,7 +1571,7 @@
+ 		log_message(LOG_INFO,
+ 		       "VRRP_Instance(%s) Dropping received VRRP packet...",
+ 		       vrrp->iname);
+-		return 0;
++		return VRRP_PACKET_DROP;
+ 	}
+ 
+ 	if (hd->priority == 0) {

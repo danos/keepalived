@@ -1,0 +1,15 @@
+---
+ keepalived/vrrp/vrrp_vmac.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/keepalived/vrrp/vrrp_vmac.c
++++ b/keepalived/vrrp/vrrp_vmac.c
+@@ -216,7 +216,7 @@
+ 	vrrp->xmit_ifp = ifp;
+ 	vrrp->xmit_ifp->base_ifindex = base_ifindex;
+ 	vrrp->xmit_ifp->vmac = 1;
+-	vrrp->vmac_ifindex = IF_INDEX(vrrp->xmit_ifp); /* For use on delete */
++	vrrp->vmac_ifindex = IF_INDEX(ifp); /* For use on delete */
+ 
+ 	if (vrrp->family == AF_INET) {
+ 		/* Set the necessary kernel parameters to make macvlans work for us */

@@ -1,0 +1,20 @@
+---
+ lib/scheduler.c |    4 ++++
+ 1 file changed, 4 insertions(+)
+
+--- a/lib/scheduler.c
++++ b/lib/scheduler.c
+@@ -495,9 +495,13 @@
+ 		break;
+ 	case THREAD_READY:
+ 	case THREAD_READY_FD:
++	case THREAD_READ_TIMEOUT:
++	case THREAD_WRITE_TIMEOUT:
+ 		thread_list_delete(&thread->master->ready, thread);
+ 		break;
+ 	default:
++		log_message(LOG_INFO, "Cancel of unhandled type %d",
++				      thread->type);
+ 		break;
+ 	}
+ 

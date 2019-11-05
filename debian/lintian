@@ -1,0 +1,2 @@
+keepalived: file-in-unusual-dir
+keepalived: dir-or-file-in-opt

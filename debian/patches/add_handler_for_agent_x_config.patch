@@ -1,0 +1,12 @@
+--- a/keepalived/core/snmp.c
++++ b/keepalived/core/snmp.c
+@@ -286,6 +286,9 @@ snmp_agent_init(const char *snmp_socket,
+ 	/* Do not handle persistent states */
+ 	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID,
+ 	    NETSNMP_DS_LIB_DONT_PERSIST_STATE, TRUE);
++	/* Do not log connection errors (may need to be removed for debugging */
++        netsnmp_ds_set_boolean(NETSNMP_DS_APPLICATION_ID,
++	    NETSNMP_DS_AGENT_NO_CONNECTION_WARNINGS, TRUE);
+ 	/* Do not load any MIB */
+ 	setenv("MIBS", "", 1);
+ 	/*

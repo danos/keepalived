@@ -1,0 +1,25 @@
+---
+ keepalived/vrrp/vrrp_sync.c |   12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -39,6 +39,18 @@
+ 	set_time_now();
+ 
+         /*
++         * If a VRRP group has not had it's sands timers initialised the set
++         * those timers to the value of time_now.
++         */
++        if (timer_isnull(vrrp->sands)) {
++            vrrp->sands = timer_dup(time_now);
++
++            /* Continue to see what necessary adjustments are required
++             * to this instance based on its state.
++             */
++        }
++
++        /*
+          * When in MASTER state the expiry time for the group controls when
+          * advertisements are transmitted.
+          * As such, sets the expiry to one advertisement interval from now

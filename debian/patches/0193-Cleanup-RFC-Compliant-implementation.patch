@@ -1,0 +1,325 @@
+---
+ keepalived/include/vrrp.h        |    5 +++--
+ keepalived/include/vrrp_data.h   |    2 ++
+ keepalived/include/vrrp_vmac.h   |    3 ++-
+ keepalived/vrrp/vrrp.c           |   20 ++++++++++++++++++--
+ keepalived/vrrp/vrrp_data.c      |    7 ++++---
+ keepalived/vrrp/vrrp_parser.c    |    2 ++
+ keepalived/vrrp/vrrp_print.c     |   12 +++++++++++-
+ keepalived/vrrp/vrrp_scheduler.c |   29 +++++++++++++++++++++--------
+ keepalived/vrrp/vrrp_vmac.c      |   38 ++++++++++++++++++++++++++++++++------
+ 9 files changed, 95 insertions(+), 23 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -151,7 +151,8 @@
+ 	char			*iname;			/* Instance Name */
+ 	vrrp_sgroup_t		*sync;			/* Sync group we belong to */
+ 	vrrp_stats		*stats;			/* Statistics */
+-	interface_t		*ifp;			/* Interface we belong to */
++	interface_t		*ifp;			/* Interface on which we receive traffic */
++	interface_t		*xmit_ifp;		/* Interface on which we transmit traffic */
+ 	bool			dont_track_primary;	/* If set ignores ifp faults */
+ 	bool			skip_check_adv_addr;	/* If set, don't check the VIPs in subsequent
+ 							 * adverts from the same master */
+@@ -159,7 +160,7 @@
+ #ifdef _HAVE_VRRP_VMAC_
+ 	unsigned long		vmac_flags;		/* VRRP VMAC flags */
+ 	char			vmac_ifname[IFNAMSIZ];	/* Name of VRRP VMAC interface */
+-	ifindex_t		vmac_ifindex;		/* ifindex of vmac interface */
++	ifindex_t		vmac_ifindex;		/* ifindex of vmac interface used upon deletion*/
+ #endif
+ 	list			track_ifp;		/* Interface state we monitor */
+ 	list			track_script;		/* Script state we monitor */
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -47,6 +47,8 @@
+ 	struct sockaddr_storage	saddr;
+ 	int			proto;
+ 	ifindex_t		ifindex;
++        ifindex_t               recv_ifindex; /* ifindex of in_fd */
++        ifindex_t               xmit_ifindex; /* ifindex of out_fd */
+ 	bool			unicast;
+ 	int			fd_in;
+ 	int			fd_out;
+--- a/keepalived/include/vrrp_vmac.h
++++ b/keepalived/include/vrrp_vmac.h
+@@ -48,5 +48,6 @@
+ /* prototypes */
+ extern int netlink_link_add_vmac(vrrp_t *);
+ extern int netlink_link_del_vmac(vrrp_t *);
+-
++extern int netlink_link_down(vrrp_t *);
++extern int netlink_link_up(vrrp_t *);
+ #endif
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1189,7 +1189,11 @@
+ static void
+ vrrp_state_become_master(vrrp_t * vrrp)
+ {
+-	interface_t *ifp ;
++        if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++            netlink_link_up(vrrp);
++        }
++
++        interface_t *ifp ;
+ 
+ 	++vrrp->stats->become_master;
+ 
+@@ -1326,6 +1330,14 @@
+ 		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
+ 		vrrp->vipset = 0;
+ 	}
++
++        if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++            if (advF) {
++                netlink_link_up(vrrp);
++            } else {
++                netlink_link_down(vrrp);
++            }
++        }
+ }
+ 
+ void
+@@ -1798,7 +1810,8 @@
+ 									    IF_INDEX(vrrp->ifp);
+ 	unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
+ 	vrrp->fd_in = open_vrrp_read_socket(vrrp->family, proto, ifindex, unicast);
+-	vrrp->fd_out = open_vrrp_send_socket(vrrp->family, proto, ifindex, unicast);
++	vrrp->fd_out = open_vrrp_send_socket(vrrp->family, proto,
++                IF_INDEX(vrrp->xmit_ifp), unicast);
+ 	alloc_vrrp_fd_bucket(vrrp);
+ 
+ 	/* Sync the other desc */
+@@ -2655,6 +2668,9 @@
+ #endif
+ 
+ #ifdef _HAVE_VRRP_VMAC_
++                        if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++                            netlink_link_up(vrrp);
++                        }
+ 			/*
+ 			 * Remove VMAC if it existed in old vrrp instance,
+ 			 * but not the new one.
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -178,8 +178,9 @@
+ dump_sock(void *sock_data)
+ {
+ 	sock_t *sock = sock_data;
+-	log_message(LOG_INFO, "VRRP sockpool: [ifindex(%u), proto(%u), unicast(%d), fd(%d,%d)]"
+-			    , sock->ifindex
++	log_message(LOG_INFO, "VRRP sockpool: [recv_ifindex(%u), xmit_ifindex(%u), proto(%u), unicast(%d), fd(%d,%d)]"
++			    , sock->recv_ifindex
++                            , sock->xmit_ifindex
+ 			    , sock->proto
+ 			    , sock->unicast
+ 			    , sock->fd_in
+@@ -483,7 +484,7 @@
+ 
+ 	if (!LIST_EXISTS(vrrp->vip))
+ 		vrrp->vip = alloc_list(free_ipaddress, dump_ipaddress);
+-	alloc_ipaddress(vrrp->vip, strvec, vrrp->ifp);
++	alloc_ipaddress(vrrp->vip, strvec, vrrp->xmit_ifp);
+ }
+ void
+ alloc_vrrp_evip(vector_t *strvec)
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -257,6 +257,8 @@
+ 				    , name, vrrp->iname);
+ 		return;
+ 	}
++
++        vrrp->xmit_ifp = vrrp->ifp;
+ }
+ static void
+ vrrp_track_int_handler(__attribute__((unused)) vector_t *strvec)
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -34,6 +34,11 @@
+ #include "vrrp_netlink.h"
+ #include "rttables.h"
+ #include "logger.h"
++#ifdef _HAVE_VRRP_VMAC_
++#include "vrrp_vmac.h"
++#include "vrrp_if.h"
++#include "bitops.h"
++#endif
+ 
+ #include <time.h>
+ #include <errno.h>
+@@ -249,7 +254,12 @@
+ 	time_str[sizeof(time_str)-2] = '\0';	/* Remove '\n' char */
+ 	fprintf(file, "   Last transition = %ld (%s)\n",
+ 		vrrp->last_transition.tv_sec, time_str);
+-	fprintf(file, "   Listening device = %s\n", IF_NAME(vrrp->ifp));
++	if (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) {
++		fprintf(file, "   Listening device = %s\n", IF_NAME(IF_BASE_IFP(vrrp->ifp)));
++	} else {
++		fprintf(file, "   Listening device = %s\n", IF_NAME(vrrp->ifp));
++	}
++	fprintf(file, "   Transmitting device = %s\n", IF_NAME(vrrp->xmit_ifp));
+ 	if (vrrp->dont_track_primary)
+ 		fprintf(file, "   VRRP interface tracking disabled\n");
+ 	if (vrrp->skip_check_adv_addr)
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -455,7 +455,7 @@
+ 		sock = ELEMENT_DATA(e);
+ 		if ((sock->family == family)	&&
+ 		    (sock->proto == proto)	&&
+-		    (sock->ifindex == ifindex)	&&
++		    (sock->recv_ifindex == ifindex)	&&
+ 		    (sock->unicast == unicast))
+ 			return 1;
+ 	}
+@@ -463,7 +463,8 @@
+ }
+ 
+ static void
+-alloc_sock(sa_family_t family, list l, int proto, ifindex_t ifindex, bool unicast)
++alloc_sock(sa_family_t family, list l, int proto, ifindex_t ifindex, ifindex_t r_ifindex,
++        ifindex_t x_ifindex, bool unicast)
+ {
+ 	sock_t *new;
+ 
+@@ -471,6 +472,8 @@
+ 	new->family = family;
+ 	new->proto = proto;
+ 	new->ifindex = ifindex;
++        new->recv_ifindex = r_ifindex;
++        new->xmit_ifindex = x_ifindex;
+ 	new->unicast = unicast;
+ 
+ 	list_add(l, new);
+@@ -482,7 +485,7 @@
+ 	vrrp_t *vrrp;
+ 	list p = vrrp_data->vrrp;
+ 	element e;
+-	ifindex_t ifindex;
++	ifindex_t ifindex, recv_ifindex, xmit_ifindex;
+ 	int proto;
+ 	bool unicast;
+ 
+@@ -493,7 +496,16 @@
+ 			  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
+ #endif
+ 										    IF_INDEX(vrrp->ifp);
+-		unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
++#ifdef _HAVE_VRRP_VMAC_
++                if (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) {
++                    recv_ifindex = IF_INDEX(vrrp->ifp);
++                    xmit_ifindex = vrrp->vmac_ifindex;
++                } else {
++                    recv_ifindex = IF_INDEX(vrrp->ifp);
++                    xmit_ifindex = recv_ifindex;
++                }
++#endif
++                unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
+ #if defined _WITH_VRRP_AUTH_
+ 		if (vrrp->version == VRRP_VERSION_2 && vrrp->auth_type == VRRP_AUTH_AH)
+ 			proto = IPPROTO_IPSEC_AH;
+@@ -502,8 +514,8 @@
+ 			proto = IPPROTO_VRRP;
+ 
+ 		/* add the vrrp element if not exist */
+-		if (!already_exist_sock(l, vrrp->family, proto, ifindex, unicast))
+-			alloc_sock(vrrp->family, l, proto, ifindex, unicast);
++		if (!already_exist_sock(l, vrrp->family, proto, recv_ifindex, unicast))
++			alloc_sock(vrrp->family, l, proto, recv_ifindex, xmit_ifindex, unicast);
+ 	}
+ }
+ 
+@@ -516,12 +528,12 @@
+ 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+ 		sock = ELEMENT_DATA(e);
+ 		sock->fd_in = open_vrrp_read_socket(sock->family, sock->proto,
+-					       sock->ifindex, sock->unicast);
++					       sock->recv_ifindex, sock->unicast);
+ 		if (sock->fd_in == -1)
+ 			sock->fd_out = -1;
+ 		else
+ 			sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
+-							     sock->ifindex, sock->unicast);
++							     sock->xmit_ifindex, sock->unicast);
+ 	}
+ }
+ 
+@@ -555,6 +567,7 @@
+ 				proto = IPPROTO_VRRP;
+ 
+ 			if ((sock->ifindex == ifindex)	&&
++                            (sock->recv_ifindex == IF_INDEX(vrrp->ifp)) &&
+ 			    (sock->family == vrrp->family) &&
+ 			    (sock->proto == proto)	&&
+ 			    (sock->unicast == unicast)) {
+--- a/keepalived/vrrp/vrrp_vmac.c
++++ b/keepalived/vrrp/vrrp_vmac.c
+@@ -57,7 +57,7 @@
+ 	l3_addr->s6_addr[15] = ll_addr[5];
+ }
+ 
+-static int
++int
+ netlink_link_up(vrrp_t *vrrp)
+ {
+ 	int status = 1;
+@@ -73,7 +73,7 @@
+ 	req.n.nlmsg_flags = NLM_F_REQUEST;
+ 	req.n.nlmsg_type = RTM_NEWLINK;
+ 	req.ifi.ifi_family = AF_UNSPEC;
+-	req.ifi.ifi_index = (int)IF_INDEX(vrrp->ifp);
++	req.ifi.ifi_index = (int)IF_INDEX(vrrp->xmit_ifp);
+ 	req.ifi.ifi_change |= IFF_UP;
+ 	req.ifi.ifi_flags |= IFF_UP;
+ 
+@@ -84,6 +84,32 @@
+ }
+ 
+ int
++netlink_link_down(vrrp_t *vrrp)
++{
++   int status = 1;
++   struct {
++       struct nlmsghdr n;
++       struct ifinfomsg ifi;
++       char buf[256];
++   } req;
++
++   memset(&req, 0, sizeof (req));
++
++   req.n.nlmsg_len = NLMSG_LENGTH(sizeof (struct ifinfomsg));
++   req.n.nlmsg_flags = NLM_F_REQUEST;
++   req.n.nlmsg_type = RTM_NEWLINK;
++   req.ifi.ifi_family = AF_UNSPEC;
++   req.ifi.ifi_index = IF_INDEX(vrrp->xmit_ifp);
++   req.ifi.ifi_change |= IFF_UP;
++   req.ifi.ifi_flags &= ~IFF_UP;
++
++   if (netlink_talk(&nl_cmd, &req.n) < 0)
++       status = -1;
++
++   return status;
++}
++
++int
+ netlink_link_add_vmac(vrrp_t *vrrp)
+ {
+ 	struct rtattr *linkinfo;
+@@ -187,10 +213,10 @@
+ 	base_ifp = vrrp->ifp;
+ 	base_ifindex = vrrp->ifp->ifindex;
+ 	ifp->flags = vrrp->ifp->flags; /* Copy base interface flags */
+-	vrrp->ifp = ifp;
+-	vrrp->ifp->base_ifindex = base_ifindex;
+-	vrrp->ifp->vmac = 1;
+-	vrrp->vmac_ifindex = IF_INDEX(vrrp->ifp); /* For use on delete */
++	vrrp->xmit_ifp = ifp;
++	vrrp->xmit_ifp->base_ifindex = base_ifindex;
++	vrrp->xmit_ifp->vmac = 1;
++	vrrp->vmac_ifindex = IF_INDEX(vrrp->xmit_ifp); /* For use on delete */
+ 
+ 	if (vrrp->family == AF_INET) {
+ 		/* Set the necessary kernel parameters to make macvlans work for us */

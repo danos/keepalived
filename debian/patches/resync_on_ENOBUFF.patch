@@ -1,0 +1,61 @@
+---
+ keepalived/include/vrrp_netlink.h |    2 ++
+ keepalived/vrrp/vrrp_netlink.c    |   21 +++++++++++++++++++--
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+--- a/keepalived/include/vrrp_netlink.h
++++ b/keepalived/include/vrrp_netlink.h
+@@ -48,6 +48,7 @@
+ 	uint32_t		nl_pid;
+ 	__u32			seq;
+ 	thread_t		*thread;
++	thread_t		*resync_thread;
+ } nl_handle_t;
+ 
+ /* Define types */
+@@ -82,6 +83,7 @@
+ extern size_t rta_nest_end(struct rtattr *, struct rtattr *);
+ extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
+ extern int netlink_interface_lookup(void);
++extern int netlink_refresh_state(thread_t *);
+ extern void kernel_netlink_poll(void);
+ extern void kernel_netlink_init(void);
+ extern void kernel_netlink_close(void);
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -590,9 +590,15 @@
+ 				continue;
+ 			if (errno == EWOULDBLOCK || errno == EAGAIN)
+ 				break;
+-			if (errno == ENOBUFS)
++			if (errno == ENOBUFS) {
+ 				log_message(LOG_INFO, "Netlink: Received message overrun - (%m)");
+-			else
++				/*
++				 * There's not enough memory in the buffer and the user state will be
++				 * out of sync with kernel state. Setup an event to reread state after
++				 * the netlink messages have calmed down.
++				 */
++				nl_kernel.resync_thread = thread_add_timer(master, netlink_refresh_state, &nl_kernel, TIMER_HZ);
++			} else
+ 				log_message(LOG_INFO, "Netlink: recvmsg error - %d (%m)", errno);
+ 			continue;
+ 		}
+@@ -971,6 +977,17 @@
+ 	return status;
+ }
+ 
++/* Resync userspace state so it matches kernel state for interfaces and address */
++int
++netlink_refresh_state(thread_t * thread)
++{
++	log_message(LOG_DEBUG, "Refreshing netlink state from kernel");
++	netlink_interface_lookup();
++	netlink_address_lookup();
++	log_message(LOG_DEBUG, "Bootstrap functions called");
++	return 0;
++}
++
+ /* Netlink flag Link update */
+ static int
+ netlink_reflect_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlmsghdr *h)

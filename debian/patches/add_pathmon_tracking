@@ -1,0 +1,432 @@
+---
+ keepalived/include/vrrp.h        |    4 -
+ keepalived/include/vrrp_data.h   |    1 
+ keepalived/include/vrrp_track.h  |   24 ++++++
+ keepalived/vrrp/vrrp_data.c      |   28 +++++++
+ keepalived/vrrp/vrrp_parser.c    |   13 ++-
+ keepalived/vrrp/vrrp_print.c     |   47 ++++++++++++
+ keepalived/vrrp/vrrp_scheduler.c |    4 +
+ keepalived/vrrp/vrrp_track.c     |  149 +++++++++++++++++++++++++++++++++++++++
+ 8 files changed, 267 insertions(+), 3 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -164,6 +164,7 @@
+ #endif
+ 	list			track_ifp;		/* Interface state we monitor */
+ 	list			track_script;		/* Script state we monitor */
++	list 			track_pathmon;		/* Path monitor state we monitor */
+ 	struct sockaddr_storage	saddr;			/* Src IP address to use in VRRP IP header */
+ 	struct sockaddr_storage	pkt_saddr;		/* Src IP address received in VRRP IP header */
+ 	list			unicast_peer;		/* List of Unicast peer to send advert to */
+@@ -323,8 +324,9 @@
+                                  TRACK_ISUP((V)->track_ifp) : 1))
+ 
+ #define VRRP_SCRIPT_ISUP(V)	((!LIST_ISEMPTY((V)->track_script)) ? SCRIPT_ISUP((V)->track_script) : 1)
++#define VRRP_PATHMON_ISUP(V) ((!LIST_ISEMPTY((V)->track_pathmon)) ? PATHMON_ISUP((V)->track_pathmon) : 1)
+ 
+-#define VRRP_ISUP(V)		(VRRP_IF_ISUP(V) && VRRP_SCRIPT_ISUP(V))
++#define VRRP_ISUP(V)		(VRRP_IF_ISUP(V) && VRRP_SCRIPT_ISUP(V) && VRRP_PATHMON_ISUP(V))
+ 
+ /* prototypes */
+ extern vrrphdr_t *vrrp_get_header(sa_family_t, char *, unsigned *);
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -85,6 +85,7 @@
+ extern void alloc_vrrp_track(vector_t *);
+ extern void alloc_vrrp_script(char *);
+ extern void alloc_vrrp_track_script(vector_t *);
++extern void alloc_vrrp_track_pathmon(vector_t *);
+ extern void alloc_vrrp_notify_script(vector_t *);
+ extern void alloc_vrrp_vip(vector_t *);
+ extern void alloc_vrrp_evip(vector_t *);
+--- a/keepalived/include/vrrp_track.h
++++ b/keepalived/include/vrrp_track.h
+@@ -37,6 +37,7 @@
+ /* Macro definition */
+ #define TRACK_ISUP(L)	(vrrp_tracked_up((L)))
+ #define SCRIPT_ISUP(L)	(vrrp_script_up((L)))
++#define PATHMON_ISUP(L)	(vrrp_pathmon_up((L)))
+ 
+ /* VRRP script tracking defaults */
+ #define VRRP_SCRIPT_DI 1	/* external script track interval (in sec) */
+@@ -73,16 +74,39 @@
+ 	vrrp_script_t		*scr;		/* script pointer, cannot be NULL */
+ } tracked_sc_t;
+ 
++/* Tracked path monitor structure definition */
++typedef struct _tracked_pathmon {
++	int weight; 		/* Tracking weight when non-zero */
++	char *monitor;		/* Monitor name */
++	char *policy; 		/* Policy name */
++} tracked_pathmon_t;
++
++/* DBus string for the path monitor objects */
++#define PATHMON_DBUS_OBJECT_STRING "/net/vyatta/monitord/v1/state"
++#define PATHMON_DBUS_INTERFACE_STRING "net.vyatta.monitord.v1"
++
++/* Pathmon state defines */
++#define PATHMON_NONCOMPLIANT 0
++#define PATHMON_COMPLIANT 1
++#define PATHMON_DELETED 2
++
++/* Pathmon monitor and policy max size */
++#define PATHMON_NAME_MAX_SIZE 30
+ /* prototypes */
+ extern void dump_track(void *);
+ extern void alloc_track(list, vector_t *);
+ extern void dump_track_script(void *);
+ extern void alloc_track_script(list, vector_t *);
++extern void dump_track_pathmon(void *);
++extern void alloc_track_pathmon(list, vector_t *);
+ extern int vrrp_tracked_up(list);
+ extern void vrrp_log_tracked_down(list);
+ extern int vrrp_tracked_weight(list);
+ extern int vrrp_script_up(list);
+ extern int vrrp_script_weight(list);
+ extern vrrp_script_t *find_script_by_name(char *);
++extern int vrrp_pathmon_up(list);
++extern int vrrp_pathmon_weight(list);
++extern int32_t vrrp_pathmon_get_policy_compliance(tracked_pathmon_t *);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -228,6 +228,16 @@
+ 			FREE(ELEMENT_DATA(e));
+ 	free_list(&vrrp->track_script);
+ 
++	if (!LIST_ISEMPTY(vrrp->track_pathmon)) {
++		for (e = LIST_HEAD(vrrp->track_pathmon); e; ELEMENT_NEXT(e)) {
++			tracked_pathmon_t *tpm = ELEMENT_DATA(e);
++			FREE(tpm->monitor);
++			FREE(tpm->policy);
++			FREE(tpm);
++		}
++	}
++	free_list(&vrrp->track_pathmon);
++
+ 	if (!LIST_ISEMPTY(vrrp->script))
+ 		for (e = LIST_HEAD(vrrp->script); e; ELEMENT_NEXT(e))
+ 			FREE(ELEMENT_DATA(e));
+@@ -310,6 +320,10 @@
+ 		log_message(LOG_INFO, "   Tracked scripts = %d", LIST_SIZE(vrrp->track_script));
+ 		dump_list(vrrp->track_script);
+ 	}
++	if (!LIST_ISEMPTY(vrrp->track_pathmon)) {
++		log_message(LOG_INFO, "   Tracked path-monitors= %d", LIST_SIZE(vrrp->track_pathmon));
++		dump_list(vrrp->track_pathmon);
++	}
+ 	if (!LIST_ISEMPTY(vrrp->unicast_peer)) {
+ 		log_message(LOG_INFO, "   Unicast Peer = %d", LIST_SIZE(vrrp->unicast_peer));
+ 		dump_list(vrrp->unicast_peer);
+@@ -492,6 +506,20 @@
+ 	alloc_track_script(vrrp->track_script, strvec);
+ }
+ 
++/*
++ * Set up list data structure to store tracked path-monitor elements.
++ * strvec - A vector containing a line from the keepalived.conf file.
++ */
++void
++alloc_vrrp_track_pathmon(vector_t *strvec)
++{
++	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
++
++	if (!LIST_EXISTS(vrrp->track_pathmon))
++		vrrp->track_pathmon = alloc_list(NULL, dump_track_pathmon);
++	alloc_track_pathmon(vrrp->track_pathmon, strvec);
++}
++
+ void
+ alloc_vrrp_notify_script(vector_t *strvec)
+ {
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -282,6 +282,11 @@
+ 	alloc_value_block(alloc_vrrp_track_script);
+ }
+ static void
++vrrp_track_pathmon_handler(__attribute__((unused)) vector_t *strvec)
++{
++	alloc_value_block(alloc_vrrp_track_pathmon);
++}
++static void
+ vrrp_dont_track_handler(__attribute__((unused)) vector_t *strvec)
+ {
+ 	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+@@ -869,8 +874,12 @@
+ 	install_keyword("state", &vrrp_state_handler);
+ 	install_keyword("interface", &vrrp_int_handler);
+ 	install_keyword("dont_track_primary", &vrrp_dont_track_handler);
+-	install_keyword("track_interface", &vrrp_track_int_handler);
+-	install_keyword("track_script", &vrrp_track_scr_handler);
++	install_keyword("track", NULL);
++	install_sublevel();
++	install_keyword("interface", &vrrp_track_int_handler);
++	install_keyword("script", &vrrp_track_scr_handler);
++	install_keyword("pathmon", &vrrp_track_pathmon_handler);
++	install_sublevel_end();
+ 	install_keyword("mcast_src_ip", &vrrp_srcip_handler);
+ 	install_keyword("unicast_src_ip", &vrrp_srcip_handler);
+ 	install_keyword("virtual_router_id", &vrrp_vrid_handler);
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -27,6 +27,7 @@
+ #include "vrrp.h"
+ #include "vrrp_data.h"
+ #include "vrrp_print.h"
++#include "vrrp_track.h"
+ #ifdef _HAVE_FIB_ROUTING_
+ #include "vrrp_iproute.h"
+ #include "vrrp_iprule.h"
+@@ -44,6 +45,7 @@
+ #include <time.h>
+ #include <errno.h>
+ #include <inttypes.h>
++#include <gio/gio.h>
+ 
+ static void
+ vrrp_print_list(FILE *file, list l, void (*fptr)(FILE*, void*))
+@@ -112,6 +114,46 @@
+ 	fprintf(file, "   Interface weight %d\n", tsc->weight);
+ }
+ 
++/*
++ * Print the path monitor tracking information to a file.
++ * file - The file to write to.
++ * data - Pointer to a tracked_pathmon_t structure.
++ * (This is used in the generation of the /tmp/keepalived.data file.)
++ * A policy can be in one of three states:
++ * Non compliant (state 0)
++ * Compliant (state 1)
++ * Deleted (state 2)
++ * These states are defined by the probed/monitord dbus feature
++ */
++static void
++vpathmon_print(FILE *file, void *data)
++{
++	tracked_pathmon_t *vpathmon = data;
++	char *policy_status;
++
++
++	fprintf(file, "   Monitor = %s\n", vpathmon->monitor);
++	fprintf(file, "   Policy = %s\n", vpathmon->policy);
++	if (vpathmon->weight)
++		fprintf(file, "   Weight = %d\n", vpathmon->weight);
++
++	switch (vrrp_pathmon_get_policy_compliance(vpathmon)) {
++		case PATHMON_NONCOMPLIANT:
++			policy_status = "NON_COMPLIANT";
++			break;
++		case PATHMON_COMPLIANT:
++			policy_status = "COMPLIANT";
++			break;
++		case PATHMON_DELETED:
++			policy_status = "DELETED";
++			break;
++		default:
++			/* Catch any unexpected extensions to states */
++			policy_status = "UNKNOWN_STATUS";
++	}
++	fprintf(file, "   Status = %s\n", policy_status);
++}
++
+ static void
+ address_print(FILE *file, void *data)
+ {
+@@ -317,6 +359,11 @@
+ 		       LIST_SIZE(vrrp->track_script));
+ 		vrrp_print_list(file, vrrp->track_script, &vscript_print);
+ 	}
++	if (!LIST_ISEMPTY(vrrp->track_pathmon)) {
++		fprintf(file, "   Tracked path-monitors = %d\n",
++		       LIST_SIZE(vrrp->track_pathmon));
++		vrrp_print_list(file, vrrp->track_pathmon, &vpathmon_print);
++	}
+ 	if (!LIST_ISEMPTY(vrrp->vip)) {
+ 		fprintf(file, "   Virtual IP = %d\n", LIST_SIZE(vrrp->vip));
+ 		vrrp_print_list(file, vrrp->vip, &address_print);
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -885,6 +885,10 @@
+ 	if (!LIST_ISEMPTY(vrrp->track_script))
+ 		prio_offset += vrrp_script_weight(vrrp->track_script);
+ 
++	/* Now we will sum the weights of all path-monitors which are tracked. */
++	if (!LIST_ISEMPTY(vrrp->track_pathmon))
++		prio_offset += vrrp_pathmon_weight(vrrp->track_pathmon);
++
+ 	/* WARNING! we must compute new_prio on a signed int in order
+ 	   to detect overflows and avoid wrapping. */
+ 	new_prio = vrrp->base_priority + prio_offset;
+--- a/keepalived/vrrp/vrrp_track.c
++++ b/keepalived/vrrp/vrrp_track.c
+@@ -29,6 +29,9 @@
+ #include "logger.h"
+ #include "memory.h"
+ 
++/* sytem include */
++#include <gio/gio.h>
++
+ /* Track interface dump */
+ void
+ dump_track(void *track_data)
+@@ -130,6 +133,55 @@
+ 	list_add(track_list, tsc);
+ }
+ 
++/* Track pathmon dump for debugging calls*/
++void
++dump_track_pathmon(void *track_data)
++{
++	tracked_pathmon_t *tpm = track_data;
++	log_message(LOG_INFO, "     %s %s weight %d", tpm->monitor, tpm->policy,
++	 						tpm->weight);
++}
++
++/*
++ * Function to define structures for specific path monitor instances.
++ * The contents of a structure is obtained from parsing the string vector read
++ * from the keepalived.conf file. The config line's structure is;
++ * monitor <monitor_name> policy <policy_name> [weight (-254..+254)]
++ * The weight key word is optional.
++ */
++void
++alloc_track_pathmon(list track_list, vector_t *strvec)
++{
++	tracked_pathmon_t *tpm = NULL;
++	int weight = 0;
++	char *monitor = vector_slot(strvec, 1);
++	char *policy = vector_slot(strvec, 3);
++
++	if (vector_size(strvec) >= 6 &&
++	    !strcmp(vector_slot(strvec, 4), "weight")) {
++		weight = atoi(vector_slot(strvec, 5));
++		log_message(LOG_DEBUG, "Got weight: %d", weight);
++		if (weight < -254 || weight > 254) {
++			weight = 0;
++			log_message(LOG_INFO, "     %s-%s: weight must be between [-254..254]"
++					 " inclusive, ignoring...",
++			       monitor, policy);
++		}
++	}
++
++	tpm	    = (tracked_pathmon_t *) MALLOC(sizeof(tracked_pathmon_t));
++	tpm->monitor = strndup(monitor, PATHMON_NAME_MAX_SIZE);
++	tpm->policy = strndup(policy, PATHMON_NAME_MAX_SIZE);
++	if (tpm->monitor == NULL || tpm->policy == NULL) {
++		log_message(LOG_EMERG, "Couldn't allocate memory for Path monitor"
++					" policy or monitor name. No memory left?");
++		FREE(tpm);
++		return;
++	}
++	tpm->weight = weight;
++	list_add(track_list, tpm);
++}
++
+ /* Test if all tracked interfaces are either UP or weight-tracked */
+ int
+ vrrp_tracked_up(list l)
+@@ -235,3 +287,100 @@
+ 
+ 	return weight;
+ }
++
++/* Test if all tracked path-monitors are either Compliant or weight-tracked */
++int
++vrrp_pathmon_up(list l)
++{
++	element e;
++	tracked_pathmon_t *tpm;
++
++	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++		tpm = ELEMENT_DATA(e);
++		if (!tpm->weight && vrrp_pathmon_get_policy_compliance(tpm) != PATHMON_COMPLIANT) {
++			return 0;
++		}
++	}
++	return 1;
++}
++
++/* Returns total weights of all tracked path-monitors:
++ * - a positive weight adds to the global weight when the path-monitor
++ * 	 is compliant.
++ * - a negative weight subtracts from the global weight when the path-monitor
++ * 	 is non-compliant.
++ */
++ int
++ vrrp_pathmon_weight(list l)
++ {
++	element e;
++	tracked_pathmon_t *tpm;
++	int weight = 0;
++
++	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++		tpm = ELEMENT_DATA(e);
++		if (tpm->weight == 0)
++			continue;
++		if (vrrp_pathmon_get_policy_compliance(tpm) == PATHMON_COMPLIANT) {
++			if (tpm->weight > 0)
++				weight += tpm->weight;
++		} else {
++			if (tpm->weight < 0)
++				weight += tpm->weight;
++		}
++	}
++	return weight;
++ }
++
++/*
++ * Connect to the System DBus and find the state of the monitor and policy given
++ * in the tpm argument. Utility function used across in this file and for
++ * printing the keepalived.data file.
++ */
++int32_t
++vrrp_pathmon_get_policy_compliance(tracked_pathmon_t *tpm){
++	GDBusConnection * connection;
++	GError *error;
++	GVariant *result;
++	uint32_t policy_value = 0;
++
++	error = NULL;
++	connection = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
++							NULL, &error);
++	if (error != NULL) {
++		log_message(LOG_DEBUG, "Got a DBus connection error when attempting"
++					" to connect to the System Bus: %d, %s",
++							error->code,
++							error->message);
++		return -1; // 0 is a valid state
++	}
++	error = NULL;
++	result = g_dbus_connection_call_sync(connection,
++					PATHMON_DBUS_INTERFACE_STRING,
++					PATHMON_DBUS_OBJECT_STRING,
++					PATHMON_DBUS_INTERFACE_STRING,
++					"get_state",
++					g_variant_new("(ss)",
++									tpm->monitor,
++									tpm->policy),
++					G_VARIANT_TYPE_TUPLE,
++					G_DBUS_CALL_FLAGS_NONE,
++					-1,
++					NULL,
++					&error);
++	if (error != NULL) {
++		log_message(LOG_DEBUG, "Got a Dbus method error when attempting to get"
++					" the compliance state of object %s.get_state(%s, %s): %d, %s",
++						PATHMON_DBUS_OBJECT_STRING,
++						tpm->monitor,
++						tpm->policy,
++						error->code,
++						error->message);
++		g_object_unref(connection);
++		return -2;
++	}
++	g_variant_get(result, "(i)", &policy_value);
++	g_variant_unref(result);
++	g_object_unref(connection);
++	return policy_value;
++}
+\ No newline at end of file

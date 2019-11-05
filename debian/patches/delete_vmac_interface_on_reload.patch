@@ -1,0 +1,55 @@
+---
+ keepalived/vrrp/vrrp_daemon.c |   28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -60,6 +60,10 @@
+ #ifdef _HAVE_LIBIPSET_
+   #include "vrrp_ipset.h"
+ #endif
++#ifdef _HAVE_VRRP_VMAC_
++  #include "vrrp_vmac.h"
++  #include "vrrp_netlink.h"
++#endif
+ #include "list.h"
+ #include "main.h"
+ #include "memory.h"
+@@ -337,6 +341,27 @@
+ 	signal_ignore(SIGPIPE);
+ }
+ 
++#ifdef _HAVE_VRRP_VMAC_
++/* Delete any vmac interfaces on vrrp groups */
++static void
++vrrp_delete_all_vmac_interfaces(){
++    element e;
++    vrrp_t *vrrp;
++
++    if (!vrrp_data)
++        return;
++
++    for (e = LIST_HEAD(vrrp_data->vrrp); e; ELEMENT_NEXT(e)) {
++        vrrp = ELEMENT_DATA(e);
++        if(__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++            netlink_link_down(vrrp);
++            netlink_link_del_vmac(vrrp);
++        }
++    }
++    return;
++}
++#endif
++
+ /* Reload thread */
+ static int
+ reload_vrrp_thread(__attribute__((unused)) thread_t * thread)
+@@ -346,6 +371,9 @@
+ 
+ 	/* Destroy master thread */
+ 	vrrp_dispatcher_release(vrrp_data);
++#ifdef _HAVE_VRRP_VMAC_
++        vrrp_delete_all_vmac_interfaces();
++#endif
+ 	kernel_netlink_close();
+ 	thread_cleanup_master(master);
+ #ifdef _WITH_LVS_

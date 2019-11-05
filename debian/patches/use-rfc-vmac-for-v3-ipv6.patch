@@ -1,0 +1,305 @@
+---
+ keepalived/include/vrrp.h      |    4 ++
+ keepalived/include/vrrp_data.h |    1 
+ keepalived/vrrp/vrrp.c         |   29 ++++++++++++++-
+ keepalived/vrrp/vrrp_data.c    |   52 ++++++++++++++++++++++++++
+ keepalived/vrrp/vrrp_vmac.c    |    2 -
+ lib/utils.c                    |   79 +++++++++++++++++++++++++++++++++++++++++
+ lib/utils.h                    |    2 +
+ 7 files changed, 167 insertions(+), 2 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -191,6 +191,10 @@
+ 							 * VRRP adverts
+ 							 */
+ 	bool			promote_secondaries;	/* Set promote_secondaries option on interface */
++        list                    ipv6_linklocal;         /* List of IPv6 link-local
++                                                         * addresses on the main
++                                                         * interface.
++                                                         */
+ 	bool			evip_add_ipv6;		/* Enable IPv6 for eVIPs if this is an IPv4 instance */
+ 	list			vroutes;		/* list of virtual routes */
+ 	list			vrules;			/* list of virtual rules */
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -87,6 +87,7 @@
+ extern void alloc_vrrp_track_script(vector_t *);
+ extern void alloc_vrrp_vip(vector_t *);
+ extern void alloc_vrrp_evip(vector_t *);
++extern void alloc_vrrp_ipv6_linklocal(vrrp_t *);
+ extern void alloc_vrrp_vroute(vector_t *);
+ extern void alloc_vrrp_vrule(vector_t *);
+ extern void alloc_vrrp_buffer(size_t);
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -69,6 +69,19 @@
+ #include <netinet/ip.h>
+ #include <netinet/ip6.h>
+ 
++/* add/remove IPv6 interface link-local addresses */
++static int
++vrrp_handle_ipv6_linklocal(vrrp_t * vrrp, int cmd)
++{
++	if (__test_bit(LOG_DETAIL_BIT, &debug))
++		log_message(LOG_INFO, "VRRP_Instance(%s) %s protocol %s",
++			    vrrp->iname,
++			    (cmd == IPADDRESS_ADD) ? "setting" : "removing",
++			    " IPv6 link-local" );
++	netlink_iplist(vrrp->ipv6_linklocal, cmd);
++	return 1;
++}
++
+ /* add/remove Virtual IP addresses */
+ static void
+ vrrp_handle_ipaddress(vrrp_t * vrrp, int cmd, int type)
+@@ -1024,6 +1037,12 @@
+ 		dst6.sin6_addr = ((struct sockaddr_in6 *) &global_data->vrrp_mcast_group6)->sin6_addr;
+ 		msg.msg_name = &dst6;
+ 		msg.msg_namelen = sizeof(dst6);
++		/*
++		 * Set the ipv6_scope_id on the source address so that the
++		 * packet is sent out of the VIF interface with the correct
++		 * virtual mac address.
++		 */
++		inet_ip6scopeid(vrrp->vmac_ifindex, src);
+ 		vrrp_build_ancillary_data(&msg, cbuf, src);
+ 	}
+ 
+@@ -1191,6 +1210,8 @@
+ {
+         if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
+             netlink_link_up(vrrp);
++            if (vrrp->family == AF_INET6)
++                alloc_vrrp_ipv6_linklocal(vrrp);
+         }
+ 
+         interface_t *ifp ;
+@@ -1207,6 +1228,8 @@
+ 		vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
+ 	if (!LIST_ISEMPTY(vrrp->evip))
+ 		vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
++	if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
++		vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_ADD);
+ 	vrrp->vipset = 1;
+ 
+ #ifdef _HAVE_FIB_ROUTING_
+@@ -1323,10 +1346,12 @@
+ 	    VRRP_VIP_ISSET(vrrp) ||
+ 	    __test_bit(DONT_RELEASE_VRRP_BIT, &debug) ||
+ 	    __test_bit(RELEASE_VIPS_BIT, &debug)) {
+-		if (!LIST_ISEMPTY(vrrp->vip))
++	    if (!LIST_ISEMPTY(vrrp->vip))
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_DEL, VRRP_VIP_TYPE);
+ 		if (!LIST_ISEMPTY(vrrp->evip))
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_DEL, VRRP_EVIP_TYPE);
++                if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
++                        vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_DEL);
+ 		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
+ 		vrrp->vipset = 0;
+ 	}
+@@ -2610,6 +2635,8 @@
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
+ 		if (!LIST_ISEMPTY(vrrp->evip))
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
++                if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
++                        vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_ADD);
+ #ifdef _HAVE_FIB_ROUTING_
+ 		if (!LIST_ISEMPTY(vrrp->vroutes))
+ 			vrrp_handle_iproutes(vrrp, IPROUTE_ADD);
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -35,6 +35,7 @@
+ #include "utils.h"
+ #include "logger.h"
+ #include "bitops.h"
++#include "parser.h"
+ #ifdef _HAVE_FIB_ROUTING_
+ #include "vrrp_iprule.h"
+ #include "vrrp_iproute.h"
+@@ -232,6 +233,7 @@
+ 	free_list(&vrrp->evip);
+ 	free_list(&vrrp->vroutes);
+ 	free_list(&vrrp->vrules);
++        free_list(&vrrp->ipv6_linklocal);
+ 	FREE(vrrp);
+ }
+ static void
+@@ -323,6 +325,11 @@
+ 		log_message(LOG_INFO, "   Virtual Rules = %d", LIST_SIZE(vrrp->vrules));
+ 		dump_list(vrrp->vrules);
+ 	}
++	if (!LIST_ISEMPTY(vrrp->ipv6_linklocal)) {
++		log_message(LOG_INFO, "   IPv6 link-local = %d",
++			    LIST_SIZE(vrrp->ipv6_linklocal));
++		dump_list(vrrp->ipv6_linklocal);
++	}
+ 	if (vrrp->script_backup)
+ 		log_message(LOG_INFO, "   Backup state transition script = %s", vrrp->script_backup);
+ 	if (vrrp->script_master)
+@@ -496,6 +503,51 @@
+ 	alloc_ipaddress(vrrp->evip, strvec, vrrp->ifp);
+ }
+ 
++void
++alloc_vrrp_ipv6_linklocal(vrrp_t *vrrp)
++{
++	vector_t *strvec = NULL;
++	char *ipv6_ll_addr;
++	char ll_string_setup[200];
++	int32_t prefix_length;
++
++	/*
++	 * Address family is checked by the caller
++	 */
++	if (LIST_ISEMPTY(vrrp->ipv6_linklocal))
++		vrrp->ipv6_linklocal = alloc_list(free_ipaddress,
++						  dump_ipaddress);
++
++	ipv6_ll_addr = inet_sockaddrtos(&vrrp->saddr);
++
++	memset(ll_string_setup, '\0', sizeof(ll_string_setup));
++	prefix_length = get_prefix_for_ip_address(ipv6_ll_addr, AF_INET6);
++	if (prefix_length < 0) {
++		prefix_length = 128;
++	}
++	sprintf(ll_string_setup, "%s/%d dev %s", ipv6_ll_addr, prefix_length,\
++	 	vrrp->xmit_ifp->ifname);
++	strvec = alloc_strvec(ll_string_setup);
++	if (strvec && vrrp->xmit_ifp != NULL) {
++		/*
++		 * Allocate the ethernet interface's IPv6 link-local
++		 * address and set its scope so that it is associated
++		 * with the virtual interface.  When the group goes
++		 * into the Master state, we will add this address
++		 * to the virtual interface so we can send packets
++		 * sourced with the virtual mac address.
++		 */
++		alloc_ipaddress(vrrp->ipv6_linklocal, strvec, vrrp->xmit_ifp);
++		log_message(LOG_INFO, "VRRP_Instance(%s) IPv6 link-local (%s/%d)"
++			    "address added to vmac intf %s", vrrp->iname, ipv6_ll_addr,\
++				prefix_length, vrrp->xmit_ifp->ifname);
++		free_strvec(strvec);
++    } else {
++		log_message(LOG_INFO, "VRRP_Instance(%s) failed to add IPv6 "
++			    "link-local address to VIF", vrrp->iname);
++	}
++}
++
+ #ifdef _HAVE_FIB_ROUTING_
+ void
+ alloc_vrrp_vroute(vector_t *strvec)
+--- a/keepalived/vrrp/vrrp_vmac.c
++++ b/keepalived/vrrp/vrrp_vmac.c
+@@ -127,7 +127,7 @@
+ 	if (!vrrp->ifp || __test_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags) || !vrrp->vrid)
+ 		return -1;
+ 
+-	if (vrrp->family == AF_INET6)
++	if (vrrp->family == AF_INET6 && vrrp->version == VRRP_VERSION_3)
+ 		ll_addr[4] = 0x02;
+ 	else
+ 		ll_addr[4] = 0x01;
+--- a/lib/utils.c
++++ b/lib/utils.c
+@@ -29,6 +29,9 @@
+ #include "utils.h"
+ #include "signals.h"
+ #include "bitops.h"
++#include <netinet/in.h>
++#include <ifaddrs.h>
++#include "logger.h"
+ 
+ #ifdef _WITH_STACKTRACE_
+ #include <sys/types.h>
+@@ -574,3 +577,79 @@
+ 	return res;
+ }
+ #endif
++
++/* Convert a netmask in a sockaddr to prefix notation */
++int32_t
++get_prefix_from_netmask(struct sockaddr *sock_addr)
++{
++	unsigned char * netmask_start, * netmask_end;
++	uint32_t netmask_length = 0;
++	int32_t prefix_length = 0;
++	if (sock_addr->sa_family == AF_INET) {
++		struct sockaddr_in *v4 = (struct sockaddr_in *)sock_addr;
++		netmask_length = sizeof(v4->sin_addr.s_addr);
++		netmask_start = (unsigned char *) & v4->sin_addr.s_addr;
++	} else if (sock_addr->sa_family == AF_INET6) {
++		struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)sock_addr;
++		netmask_length = sizeof(v6->sin6_addr.s6_addr);
++		netmask_start = (unsigned char *) & v6->sin6_addr.s6_addr;
++	} else {
++		return -1;
++	}
++
++	/*
++	 * Algorithm to convert the mask to a prefix. Works for v4 and v6
++	 * masks.
++	 */
++	netmask_end = netmask_start + netmask_length;
++	do {
++		prefix_length += (*netmask_end % 8);
++		netmask_end--;
++	} while((*netmask_end != 0xff) && netmask_end != netmask_start);
++	// We've gone one too far to find a byte that is 0xff add it back on.
++	prefix_length += ((netmask_end + 1) - netmask_start) * 8;
++	return prefix_length;
++}
++
++int32_t
++get_prefix_for_ip_address(char * ip_address, int family)
++{
++	struct ifaddrs *ifaddr, *ifa;
++	int string_length = (family == AF_INET)? INET_ADDRSTRLEN : INET6_ADDRSTRLEN;
++	char test_ip_address[string_length];
++	struct sockaddr *af_unspec_sock;
++	struct sockaddr_in af_inet_sock;
++	struct sockaddr_in6 af_inet6_sock;
++	int32_t prefix_length = -1;
++
++	if (getifaddrs(&ifaddr) == -1) {
++		log_message(LOG_INFO, "Failed to get interface information");
++		return prefix_length;
++	}
++
++	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != family) {
++			continue;
++		}
++
++		if (family == AF_INET) {
++			af_inet_sock = *(struct sockaddr_in *)ifa->ifa_addr;
++			inet_ntop(family, &(af_inet_sock.sin_addr), test_ip_address, string_length);
++			af_inet_sock = *(struct sockaddr_in *)ifa->ifa_netmask;
++			af_unspec_sock = (struct sockaddr *)&af_inet_sock;
++		} else if (family == AF_INET6) {
++			af_inet6_sock = *(struct sockaddr_in6 *)ifa->ifa_addr;
++			inet_ntop(family, &(af_inet6_sock.sin6_addr), test_ip_address, string_length);
++			af_inet6_sock = *(struct sockaddr_in6 *)ifa->ifa_netmask;
++			af_unspec_sock = (struct sockaddr *)&af_inet6_sock;
++		}
++
++		if (strncmp(test_ip_address, ip_address, string_length) != 0)
++			continue;
++
++		prefix_length = get_prefix_from_netmask(af_unspec_sock);
++		break;
++	}
++	freeifaddrs(ifaddr);
++	return prefix_length;
++}
+--- a/lib/utils.h
++++ b/lib/utils.h
+@@ -71,6 +71,8 @@
+ extern char *get_local_name(void);
+ extern int string_equal(const char *, const char *);
+ extern void set_std_fd(int);
++extern int32_t get_prefix_for_ip_address(char *, int);
++extern int32_t get_prefix_from_netmask(struct sockaddr *);
+ #ifndef _HAVE_LIBIPTC_
+ extern int fork_exec(char **argv);
+ #endif

@@ -1,0 +1,300 @@
+---
+ keepalived/include/vrrp.h        |   19 ++++++-
+ keepalived/vrrp/vrrp.c           |  100 ++++++++++++++++++++++++++++++++++++---
+ keepalived/vrrp/vrrp_netlink.c   |   47 +++++++++++++++++-
+ keepalived/vrrp/vrrp_parser.c    |   11 ++++
+ keepalived/vrrp/vrrp_print.c     |    4 +
+ keepalived/vrrp/vrrp_scheduler.c |    4 +
+ 6 files changed, 172 insertions(+), 13 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -206,6 +206,9 @@
+ 	unsigned		accept;			/* Allow the non-master owner to process
+ 							 * the packets destined to VIP.
+ 							 */
++	bool		addr_owner;		/* Do any of our vips match the primary
++								 * ip address on the real interface?
++								 */
+ 	bool			iptable_rules_set;	/* Iptable drop rules set to VIP list ? */
+ 	bool			nopreempt;		/* true if higher prio does not preempt lower */
+ 	unsigned long		preempt_delay;		/* Seconds*TIMER_HZ after startup until
+@@ -308,8 +311,16 @@
+ #define VRRP_PKT_SADDR(V) (((V)->saddr.ss_family) ? ((struct sockaddr_in *) &(V)->saddr)->sin_addr.s_addr : IF_ADDR((V)->ifp))
+ #define VRRP_PKT_SADDR6(V) (((V)->saddr.ss_family) ? ((struct sockaddr_in6 *) &(V)->saddr)->sin6_addr : IF_ADDR6((V)->ifp))
+ 
+-#define VRRP_IF_ISUP(V)		((IF_ISUP((V)->ifp) || (V)->dont_track_primary) & \
+-				((!LIST_ISEMPTY((V)->track_ifp)) ? TRACK_ISUP((V)->track_ifp) : 1))
++#define VRRP_IF_HAS_V4_ADDR(V)  (IF_ADDR((V)->ifp) != INADDR_ANY)
++#define VRRP_IF_HAS_V6_ADDR(V)  (!IN6_IS_ADDR_UNSPECIFIED(&IF_ADDR6((V)->ifp)))
++#define VRRP_IF_HAS_ADDR(V)     (((V)->family == AF_INET) ? \
++                                VRRP_IF_HAS_V4_ADDR(V) : \
++                                VRRP_IF_HAS_V6_ADDR(V))
++
++#define VRRP_IF_ISUP(V)		(((IF_ISUP((V)->ifp) && VRRP_IF_HAS_ADDR(V)) || \
++                                (V)->dont_track_primary) & \
++				((!LIST_ISEMPTY((V)->track_ifp)) ? \
++                                 TRACK_ISUP((V)->track_ifp) : 1))
+ 
+ #define VRRP_SCRIPT_ISUP(V)	((!LIST_ISEMPTY((V)->track_script)) ? SCRIPT_ISUP((V)->track_script) : 1)
+ 
+@@ -339,5 +350,9 @@
+ extern void clear_diff_script(void);
+ extern void vrrp_restore_interface(vrrp_t *, bool, bool);
+ extern void vrrp_remove_delayed_arp_na(vrrp_t *);
++extern void vrrp_check_for_owner_mode(vrrp_t *vrrp);
++extern void vrrp_update_saddr(vrrp_t *);
++extern void vrrp_scan_groups_to_update_saddr(sa_family_t);
++extern int vrrp_handle_ipv6_linklocal(vrrp_t *, int);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -70,7 +70,7 @@
+ #include <netinet/ip6.h>
+ 
+ /* add/remove IPv6 interface link-local addresses */
+-static int
++int
+ vrrp_handle_ipv6_linklocal(vrrp_t * vrrp, int cmd)
+ {
+ 	if (__test_bit(LOG_DETAIL_BIT, &debug))
+@@ -1037,12 +1037,6 @@
+ 		dst6.sin6_addr = ((struct sockaddr_in6 *) &global_data->vrrp_mcast_group6)->sin6_addr;
+ 		msg.msg_name = &dst6;
+ 		msg.msg_namelen = sizeof(dst6);
+-		/*
+-		 * Set the ipv6_scope_id on the source address so that the
+-		 * packet is sent out of the VIF interface with the correct
+-		 * virtual mac address.
+-		 */
+-		inet_ip6scopeid(vrrp->vmac_ifindex, src);
+ 		vrrp_build_ancillary_data(&msg, cbuf, src);
+ 	}
+ 
+@@ -1204,6 +1198,95 @@
+ 	vrrp->gna_pending = false;
+ }
+ 
++static bool
++vrrp_check_vip_is_src_addr(ip_address_t *vip, struct sockaddr_storage *saddr)
++{
++	bool match = false;
++
++	if (vip->ifa.ifa_family == saddr->ss_family) {
++		if (((vip->ifa.ifa_family == AF_INET) &&
++			(inet_inaddrcmp(vip->ifa.ifa_family,
++				&vip->u.sin.sin_addr,
++				&((struct sockaddr_in *)saddr)->sin_addr) == 0)) ||
++			((vip->ifa.ifa_family == AF_INET6) &&
++				(inet_inaddrcmp(vip->ifa.ifa_family,
++				&vip->u.sin6_addr,
++				&((struct sockaddr_in6 *)saddr)->sin6_addr) == 0)))
++					match = true;
++	}
++	return match;
++}
++
++void
++vrrp_check_for_owner_mode(vrrp_t *vrrp)
++{
++	bool was_owner = false;
++	element e;
++	ip_address_t *vip;
++
++	if (LIST_ISEMPTY(vrrp->vip))
++		return;
++
++	was_owner = vrrp->addr_owner;
++
++	vrrp->addr_owner = false;
++	for (e = LIST_HEAD(vrrp->vip); e; ELEMENT_NEXT(e)) {
++		vip = ELEMENT_DATA(e);
++		if (vrrp_check_vip_is_src_addr(vip, &vrrp->saddr)) {
++			vrrp->addr_owner = true;
++			break;
++		}
++	}
++
++	if (was_owner != vrrp->addr_owner) {
++		/*
++		 * ++AGD++ TODO
++		 * We actually need to calculate the priority if we have just
++		 * fallen out of owner mode to allow for tracked interfaces.
++		 * See vrrp_scheduler.c:vrrp_update_priority for what needs to
++		 * be done.
++		 */
++		if (vrrp->addr_owner)
++			vrrp->effective_priority = VRRP_PRIO_OWNER;
++		else
++			vrrp->effective_priority = vrrp->base_priority;
++	}
++}
++
++void
++vrrp_update_saddr(vrrp_t *vrrp)
++{
++	if (vrrp->family == AF_INET) {
++		inet_ip4tosockaddr(&(vrrp->ifp)->sin_addr, &vrrp->saddr);
++	} else if (vrrp->family == AF_INET6) {
++		inet_ip6tosockaddr(&(vrrp->ifp)->sin6_addr, &vrrp->saddr);
++		/*
++		 * IPv6 use-case: Binding to link-local address requires an
++		 * interface
++		 */
++		inet_ip6scopeid(IF_INDEX(vrrp->xmit_ifp), &vrrp->saddr);
++	}
++	vrrp_check_for_owner_mode(vrrp);
++}
++
++void
++vrrp_scan_groups_to_update_saddr(sa_family_t family)
++{
++	element e;
++	vrrp_t *vrrp;
++	int ifindex;
++
++	if (!vrrp_data)
++		return;
++
++	for (e = LIST_HEAD(vrrp_data->vrrp); e; ELEMENT_NEXT(e)) {
++		vrrp = ELEMENT_DATA(e);
++		ifindex = (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) : IF_INDEX(vrrp->ifp);
++		if (IF_INDEX(vrrp->ifp) == ifindex && family == vrrp->family)
++			vrrp_update_saddr(vrrp);
++	}
++}
++
+ /* becoming master */
+ void
+ vrrp_state_become_master(vrrp_t * vrrp)
+@@ -2368,6 +2451,9 @@
+ 	l = vrrp_data->vrrp;
+ 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+ 		vrrp = ELEMENT_DATA(e);
++
++		vrrp_update_saddr(vrrp);
++
+ 		if (!vrrp_complete_instance(vrrp))
+ 			return false;
+ 
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -443,6 +443,12 @@
+ }
+ #endif
+ 
++static int
++in_addr_eq(struct in_addr *a, struct in_addr *b)
++{
++	return (a->s_addr == b->s_addr);
++}
++
+ /*
+  * Netlink interface address lookup filter
+  * We need to handle multiple primary address and
+@@ -490,11 +496,48 @@
+ 
+ 	/* If no address is set on interface then set the first time */
+ 	if (ifa->ifa_family == AF_INET) {
+-		if (!ifp->sin_addr.s_addr)
++		if (!ifp->sin_addr.s_addr && h->nlmsg_type == RTM_NEWADDR) {
++			/*
++			 * The first address is the interface's primary
++			 * address, so remember it.
++			 */
+ 			ifp->sin_addr = *(struct in_addr *) addr;
++			vrrp_scan_groups_to_update_saddr(AF_INET);
++		} else {
++			if (in_addr_eq(&ifp->sin_addr, (struct in_addr *) addr) &&
++				(h->nlmsg_type == RTM_DELADDR)) {
++				/*
++				 * The interface's primary address is being
++				 * deleted, forget it. If a secondary address
++				 * is about to be promoted to primary, we'll
++				 * hear about it shortly.
++				 */
++				memset(&ifp->sin_addr, 0, sizeof(struct in_addr));
++				vrrp_scan_groups_to_update_saddr(AF_INET);
++			}
++		}
+ 	} else {
+-		if (!ifp->sin6_addr.s6_addr16[0] && ifa->ifa_scope == RT_SCOPE_LINK)
++		struct sockaddr_storage ipv6_sock_addr;
++
++		if (!ifp->sin6_addr.s6_addr16[0] &&
++				ifa->ifa_scope == RT_SCOPE_LINK &&
++				h->nlmsg_type == RTM_NEWADDR &&
++				ifa->ifa_prefixlen == 64) {
+ 			ifp->sin6_addr = *(struct in6_addr *) addr;
++			inet_ip6tosockaddr(&ifp->sin6_addr, &ipv6_sock_addr);
++			vrrp_scan_groups_to_update_saddr(AF_INET6);
++		} else {
++			if (IN6_ARE_ADDR_EQUAL(&ifp->sin6_addr, (struct in6_addr *)addr) &&
++					(h->nlmsg_type == RTM_DELADDR)) {
++				/*
++				 * The interface's link-local IPv6 address has
++				 * been deleted, so forget it.
++				 */
++				inet_ip6tosockaddr((struct in6_addr *)addr, &ipv6_sock_addr);
++				memset(&ifp->sin6_addr, 0, sizeof(struct in6_addr));
++				vrrp_scan_groups_to_update_saddr(AF_INET6);
++			}
++		}
+ 	}
+ 
+ #ifdef _WITH_LVS_
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -194,6 +194,8 @@
+ 	if (vector_size(strvec) >= 2) {
+ 		strncpy(vrrp->vmac_ifname, vector_slot(strvec, 1), IFNAMSIZ - 1);
+ 
++                netlink_link_add_vmac(vrrp);
++
+ 		/* Check if the interface exists and is a macvlan we can use */
+ 		if ((ifp = if_get_by_ifname(vrrp->vmac_ifname)) &&
+ 		    !ifp->vmac) {
+@@ -201,6 +203,15 @@
+ 			vrrp->vmac_ifname[0] = '\0';
+ 		}
+ 	}
++
++        if (!vrrp->saddr.ss_family) {
++            if (!ifp) {
++                log_message(LOG_INFO, "Please define interface keyword before use_vmac keyword");
++                return;
++            } else {
++                vrrp_update_saddr(vrrp);
++            }
++        }
+ }
+ static void
+ vrrp_vmac_xmit_base_handler(__attribute__((unused)) vector_t *strvec)
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -277,7 +277,9 @@
+ 	fprintf(file, "   Gratuitous ARP lower priority repeat = %u\n", vrrp->garp_lower_prio_rep);
+ 	fprintf(file, "   Send advert after receive lower priority advert = %s\n", vrrp->lower_prio_no_advert ? "false" : "true");
+ 	fprintf(file, "   Virtual Router ID = %d\n", vrrp->vrid);
+-	fprintf(file, "   Priority = %d\n", vrrp->base_priority);
++	fprintf(file, "   Base priority = %d\n", vrrp->base_priority);
++	fprintf(file, "   Effective priority = %d\n", vrrp->effective_priority);
++	fprintf(file, "   Address owner = %s\n", ((vrrp->addr_owner) ? "yes" : "no"));
+ 	fprintf(file, "   Advert interval = %d %s\n",
+ 		(vrrp->version == VRRP_VERSION_2) ? (vrrp->adver_int / TIMER_HZ) :
+ 		(vrrp->adver_int / (TIMER_HZ / 1000)),
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -890,8 +890,10 @@
+ 	new_prio = vrrp->base_priority + prio_offset;
+ 	if (new_prio < 1)
+ 		new_prio = 1;
+-	else if (new_prio >= VRRP_PRIO_OWNER)
++	else if (new_prio >= VRRP_PRIO_OWNER && !vrrp->addr_owner)
+ 		new_prio = VRRP_PRIO_OWNER - 1;
++        if (vrrp->addr_owner)
++            new_prio = VRRP_PRIO_OWNER;
+ 	vrrp_set_effective_priority(vrrp, (uint8_t)new_prio);
+ 
+ 	/* Register next priority update thread */

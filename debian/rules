@@ -1,0 +1,41 @@
+#!/usr/bin/make -f
+
+
+%:
+	dh $@ --with autoreconf --with systemd
+
+override_dh_auto_configure:
+	aclocal
+	autoheader
+	automake --add-missing
+	autoreconf
+	dh_auto_configure -- --prefix=/usr --with-kernel-dir=$(CURDIR)/debian --with-systemdsystemunitdir=/etc/systemd/system/multi-user.target.wants --enable-snmp-keepalived --enable-snmp-rfc --disable-lvs --enable-sha1 --enable-dbus
+
+override_dh_strip:
+	dh_strip --dbg-package=keepalived-dbg
+
+override_dh_installinit:
+	dh_installinit -pkeepalived --no-start --noscripts
+
+override_dh_systemd_enable:
+	dh_systemd_enable -pkeepalived --no-enable
+
+override_dh_systemd_start:
+	dh_systemd_start -pkeepalived --no-start
+
+override_dh_auto_install:
+	dh_auto_install
+	rm -rf $(DEB_DESTDIR)/etc/keepalived/samples
+	rm -rf $(DEB_DESTDIR)/etc/keepalived/keepalived.conf
+	rm -rf $(DEB_DESTDIR)/etc/init.d/keepalived.init
+	rm -rf $(DEB_DESTDIR)/etc/sysconfig
+	rm -rf $(DEB_DESTDIR)/usr/man
+
+
+pre-build::
+	rm -f debian/files
+
+override_dh_auto_clean:
+	dh_auto_clean
+	-rm config.status
+	-rm config.log

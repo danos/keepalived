@@ -1,0 +1,30 @@
+---
+ keepalived/vrrp/vrrp.c |   10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1823,8 +1823,6 @@
+ 		/* Set v4 related */
+ 		if_setsockopt_mcast_all(family, &fd);
+ 		if_setsockopt_hdrincl(&fd);
+-		if (unicast)
+-			if_setsockopt_bindtodevice(&fd, ifp);
+ 	} else if (family == AF_INET6) {
+ 		/* Set v6 related */
+ 		if_setsockopt_ipv6_checksum(&fd);
+@@ -1832,6 +1830,14 @@
+ 			if_setsockopt_mcast_hops(family, &fd);
+ 	}
+ 
++	/* Bind the per-interface send socket to the specified interface.
++	 * For unicast, this is needed for IPv4 and does no harm for IPv6.
++	 * For multicast, this is needed for IPv4 and IPv6 in case the interface
++	 * is in a VRF. When the IP[V6]_MULTICAST_IF socket option is set, the
++	 * kernel blocks the use of an unbound socket for interfaces in a VRF.
++	 */
++	if_setsockopt_bindtodevice(&fd, ifp);
++
+ 	if (!unicast) {
+ 		if_setsockopt_mcast_if(family, &fd, ifp);
+ 		if_setsockopt_mcast_loop(family, &fd);

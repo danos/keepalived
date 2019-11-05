@@ -1,0 +1,24 @@
+---
+ keepalived/vrrp/vrrp_vmac.c |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_vmac.c
++++ b/keepalived/vrrp/vrrp_vmac.c
+@@ -73,7 +73,7 @@
+ 	req.n.nlmsg_flags = NLM_F_REQUEST;
+ 	req.n.nlmsg_type = RTM_NEWLINK;
+ 	req.ifi.ifi_family = AF_UNSPEC;
+-	req.ifi.ifi_index = (int)IF_INDEX(vrrp->xmit_ifp);
++	req.ifi.ifi_index = (int)vrrp->vmac_ifindex;
+ 	req.ifi.ifi_change |= IFF_UP;
+ 	req.ifi.ifi_flags |= IFF_UP;
+ 
+@@ -99,7 +99,7 @@
+    req.n.nlmsg_flags = NLM_F_REQUEST;
+    req.n.nlmsg_type = RTM_NEWLINK;
+    req.ifi.ifi_family = AF_UNSPEC;
+-   req.ifi.ifi_index = IF_INDEX(vrrp->xmit_ifp);
++   req.ifi.ifi_index = vrrp->vmac_ifindex;
+    req.ifi.ifi_change |= IFF_UP;
+    req.ifi.ifi_flags &= ~IFF_UP;
+ 

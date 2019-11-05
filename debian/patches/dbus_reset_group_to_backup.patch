@@ -1,0 +1,282 @@
+---
+ keepalived/dbus/org.keepalived.Vrrp1.Instance.xml |    7 ++++
+ keepalived/include/vrrp.h                         |    2 -
+ keepalived/include/vrrp_scheduler.h               |    2 -
+ keepalived/include/vrrp_sync.h                    |    3 +
+ keepalived/vrrp/vrrp.c                            |   12 ++++--
+ keepalived/vrrp/vrrp_dbus.c                       |   38 ++++++++++++++++++++++
+ keepalived/vrrp/vrrp_scheduler.c                  |   11 +++---
+ keepalived/vrrp/vrrp_sync.c                       |   12 +++---
+ 8 files changed, 68 insertions(+), 19 deletions(-)
+
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
+@@ -17,6 +17,13 @@
+ 	<method name='SendGarp'>
+ 	</method>
+ 	<!--
++	  ResetMaster:
++
++	  Resets group to back up if it's master.
++	-->
++	<method name='ResetMaster'>
++	</method>
++	<!--
+ 	  VrrpStatusChange:
+ 	  @status: numerical value defining the state.
+ 
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -342,7 +342,7 @@
+ extern int vrrp_state_master_tx(vrrp_t *, const int);
+ extern void vrrp_state_backup(vrrp_t *, char *, ssize_t);
+ extern void vrrp_state_goto_master(vrrp_t *);
+-extern void vrrp_state_leave_master(vrrp_t *);
++extern void vrrp_state_leave_master(vrrp_t *, bool, char *);
+ void vrrp_state_become_master(vrrp_t *);
+ extern bool vrrp_complete_init(void);
+ #ifdef _WITH_LVS_
+--- a/keepalived/include/vrrp_sync.h
++++ b/keepalived/include/vrrp_sync.h
+@@ -46,10 +46,11 @@
+ extern void vrrp_sync_set_group(vrrp_sgroup_t *);
+ extern int vrrp_sync_leave_fault(vrrp_t *);
+ extern int vrrp_sync_goto_master(vrrp_t *);
+-extern void vrrp_sync_backup(vrrp_t *);
++extern void vrrp_sync_backup(vrrp_t *, bool);
+ extern void vrrp_sync_master(vrrp_t *);
+ extern void vrrp_sync_master_election(vrrp_t *);
+ extern void vrrp_sync_fault(vrrp_t *);
++extern void vrrp_sync_update_thread(vrrp_t *);
+ void vrrp_sync_become_master(vrrp_t *);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1540,7 +1540,7 @@
+ }
+ 
+ void
+-vrrp_state_leave_master(vrrp_t * vrrp)
++vrrp_state_leave_master(vrrp_t * vrrp, bool resign, char * reason)
+ {
+ 	if (VRRP_VIP_ISSET(vrrp)) {
+ #ifdef _WITH_LVS_
+@@ -1553,8 +1553,9 @@
+ 	/* set the new vrrp state */
+ 	switch (vrrp->wantstate) {
+ 	case VRRP_STATE_BACK:
+-		log_message(LOG_INFO, "VRRP_Instance(%s) Entering BACKUP STATE", vrrp->iname);
+-		vrrp_restore_interface(vrrp, false, false);
++		log_message(LOG_INFO, "VRRP_Instance(%s) Entering BACKUP STATE %s",
++			vrrp->iname, reason);
++		vrrp_restore_interface(vrrp, resign, false);
+ 		vrrp->state = vrrp->wantstate;
+ 		notify_instance_exec(vrrp, VRRP_STATE_BACK);
+ 		vrrp->preempt_time.tv_sec = 0;
+@@ -1563,8 +1564,9 @@
+ #endif
+ 		break;
+ 	case VRRP_STATE_GOTO_FAULT:
+-		log_message(LOG_INFO, "VRRP_Instance(%s) Entering FAULT STATE", vrrp->iname);
+-		vrrp_restore_interface(vrrp, false, false);
++		log_message(LOG_INFO, "VRRP_Instance(%s) Entering FAULT STATE %s",
++			vrrp->iname, reason);
++		vrrp_restore_interface(vrrp, resign, false);
+ 		vrrp->state = VRRP_STATE_FAULT;
+ 		notify_instance_exec(vrrp, VRRP_STATE_FAULT);
+ 		vrrp_send_adv(vrrp, VRRP_PRIO_STOP);
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -54,6 +54,7 @@
+ #include "vrrp_data.h"
+ #include "vrrp_if.h"
+ #include "vrrp_print.h"
++#include "vrrp_sync.h"
+ #include "main.h"
+ #include "memory.h"
+ #include "logger.h"
+@@ -70,6 +71,7 @@
+ 	DBUS_DESTROY_INSTANCE,
+ #endif
+ 	DBUS_SEND_GARP,
++	DBUS_RESET_MASTER,
+ 	DBUS_GET_NAME,
+ 	DBUS_GET_STATUS,
+ } dbus_action_t;
+@@ -80,6 +82,7 @@
+ 	DBUS_OBJECT_ALREADY_EXISTS,
+ 	DBUS_INTERFACE_TOO_LONG,
+ 	DBUS_INSTANCE_NOT_FOUND,
++	DBUS_GROUP_NOT_MASTER,
+ } dbus_error_t;
+ 
+ typedef struct dbus_queue_ent {
+@@ -263,6 +266,9 @@
+ 			g_variant_get(ent->args, "(s)", &iname);
+ 			log_message(LOG_INFO, "Unable to find DBus requested instance %s", iname);
+ 		}
++		else if (ent->reply == DBUS_GROUP_NOT_MASTER) {
++			log_message(LOG_INFO, "Dbus group is not master, can't switch");
++		}
+ 		else
+ 			log_message(LOG_INFO, "Unknown DBus reply %d", ent->reply);
+ 	}
+@@ -425,6 +431,17 @@
+ 				g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS, "Instance '%s/%d/%s' not found", ifname_str, ent.vrid, family_str(ent.family));
+ 			else
+ 				g_dbus_method_invocation_return_value(invocation, NULL);
++		} else if (!g_strcmp0(method_name, "ResetMaster")) {
++			get_interface_ids(object_path, ifname_str, &ent.vrid, &ent.family);
++			ent.action = DBUS_RESET_MASTER;
++			ent.ifname = ifname_str;
++			process_method_call(&ent);
++			if (ent.reply == DBUS_INTERFACE_NOT_FOUND)
++				g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS, "Instance '%s/%d/%s' not found", ifname_str, ent.vrid, family_str(ent.family));
++			else if (ent.reply == DBUS_GROUP_NOT_MASTER)
++				g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS, "Instance '%s/%d/%s' is not MASTER, no reset happening", ifname_str, ent.vrid, family_str(ent.family));
++			else
++				g_dbus_method_invocation_return_value(invocation, NULL);
+ 		} else {
+ 			log_message(LOG_INFO, "Method %s has not been implemented yet", method_name);
+ 			g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_MATCH_RULE_NOT_FOUND, "Method not implemented");
+@@ -744,6 +761,27 @@
+ 				ent->reply = DBUS_SUCCESS;
+ 			}
+ 		}
++		else if (ent->action == DBUS_RESET_MASTER) {
++			ent->reply = DBUS_INTERFACE_NOT_FOUND;
++			vrrp = get_vrrp_instance(ent->ifname, ent->vrid, ent->family);
++			if (vrrp) {
++				if (vrrp->state != VRRP_STATE_MAST) {
++					log_message(LOG_INFO, "VRRP_Instance(%s) is not master, can't reset it", vrrp->iname);
++					ent->reply = DBUS_GROUP_NOT_MASTER;
++				} else {
++					vrrp->wantstate = VRRP_STATE_BACK;
++					vrrp_state_leave_master(vrrp, true, "- DBus reset called");
++					vrrp_init_instance_sands(vrrp);
++					if (vrrp->sync != NULL) {
++						vrrp_sync_backup(vrrp, true);
++					} else {
++						vrrp_sync_update_thread(vrrp);
++						vrrp_smtp_notifier(vrrp);
++					}
++					ent->reply = DBUS_SUCCESS;
++				}
++			}
++		}
+ 		else if (ent->action == DBUS_GET_NAME ||
+ 			 ent->action == DBUS_GET_STATUS) {
+ 			/* we look for the vrrp instance object that corresponds to our interface and group */
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -158,7 +158,7 @@
+ };
+ 
+ /* SMTP alert notifier */
+-static void
++void
+ vrrp_smtp_notifier(vrrp_t * vrrp)
+ {
+ 	if (vrrp->smtp_alert) {
+@@ -752,14 +752,14 @@
+ 	if (!VRRP_ISUP(vrrp)) {
+ 		vrrp_log_int_down(vrrp);
+ 		vrrp->wantstate = VRRP_STATE_GOTO_FAULT;
+-		vrrp_state_leave_master(vrrp);
++		vrrp_state_leave_master(vrrp, false, " - Interface is down");
+         return;
+ 	}
+ 
+     ret = vrrp_state_master_rx(vrrp, buffer, len);
+ 
+     if (ret == 1) {
+-        vrrp_state_leave_master(vrrp);
++        vrrp_state_leave_master(vrrp, false, " - Link failure or higher priority advert received");
+         vrrp_smtp_notifier(vrrp);
+     } else if (ret == VRRP_PACKET_DROP) {
+         log_message(LOG_INFO, "VRRP_Instance(%s), ignoring rcvd packet",
+@@ -787,7 +787,7 @@
+ 	log_message(LOG_INFO, "VRRP_Instance(%s) in FAULT state jump to AH sync",
+ 	       vrrp->iname);
+ 	vrrp->wantstate = VRRP_STATE_BACK;
+-	vrrp_state_leave_master(vrrp);
++	vrrp_state_leave_master(vrrp, false, " - AH sync required");
+ }
+ #endif
+ 
+@@ -971,7 +971,7 @@
+ 		vrrp->ms_down_timer = 3 * vrrp->adver_int + VRRP_TIMER_SKEW(vrrp);
+ 
+ 		/* handle backup state transition */
+-		vrrp_state_leave_master(vrrp);
++		vrrp_state_leave_master(vrrp, false, " - state transition called from master state");
+ 
+ 		if (vrrp->state == VRRP_STATE_BACK)
+ 			log_message(LOG_INFO, "VRRP_Instance(%s) Now in BACKUP state",
+@@ -1205,6 +1205,7 @@
+ 
+     /* If no instance found => ignore the advert */
+ 	if (!vrrp) {
++		log_message(LOG_INFO, "No VRRP instance found for packet");
+ 		return sock->fd_in;
+     }
+ 
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -248,7 +248,7 @@
+     return NULL;
+ }
+ 
+-static void
++void
+ vrrp_sync_update_thread(vrrp_t *sync_vrrp) {
+     sock_t *socket;
+     long vrrp_timer = 0;
+@@ -316,7 +316,7 @@
+ }
+ 
+ void
+-vrrp_sync_backup(vrrp_t * vrrp)
++vrrp_sync_backup(vrrp_t * vrrp, bool resign)
+ {
+ 	vrrp_t *isync;
+ 	vrrp_sgroup_t *vgroup = vrrp->sync;
+@@ -327,16 +327,16 @@
+ 		return;
+ 
+ 	log_message(LOG_INFO, "VRRP_Group(%s) Syncing instances to BACKUP state",
+-	       GROUP_NAME(vgroup));
++			GROUP_NAME(vgroup));
+ 
+ 	/* Perform sync index */
+ 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+ 		isync = ELEMENT_DATA(e);
+ 		if (isync != vrrp && isync->state != VRRP_STATE_BACK) {
+ 			isync->wantstate = VRRP_STATE_BACK;
+-			vrrp_state_leave_master(isync);
++			vrrp_state_leave_master(isync, resign, " - a sync group instance changed to BACKUP");
+ 			vrrp_init_instance_sands(isync);
+-                        vrrp_sync_update_thread(isync);
++			vrrp_sync_update_thread(isync);
+ 		}
+ 	}
+ 	vgroup->state = VRRP_STATE_BACK;
+@@ -413,7 +413,7 @@
+ 				isync->wantstate = VRRP_STATE_GOTO_FAULT;
+ 			if (isync->state == VRRP_STATE_BACK)
+ 				isync->state = VRRP_STATE_FAULT;
+-                        vrrp_state_leave_master(isync);
++                        vrrp_state_leave_master(isync, false, " - a sync group instance changed to FAULT");
+                         vrrp_init_instance_sands(isync);
+ 		}
+ 	}
+--- a/keepalived/include/vrrp_scheduler.h
++++ b/keepalived/include/vrrp_scheduler.h
+@@ -69,5 +69,5 @@
+ extern int vrrp_arp_thread(thread_t *);
+ int vrrp_read_dispatcher_thread(thread_t *);
+ unsigned long vrrp_timer_fd(int);
+-
++void vrrp_smtp_notifier(vrrp_t *);
+ #endif

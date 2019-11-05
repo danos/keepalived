@@ -1,0 +1,21 @@
+[Unit]
+Description=Keepalived Daemon (LVS and VRRP)
+After=network-online.target vyatta-dataplane.service
+Wants=network-online.target vyatta-dataplane.service
+# Only start if there is a configuration file
+ConditionFileNotEmpty=/etc/keepalived/keepalived.conf
+
+[Service]
+Type=forking
+PIDFile=/var/run/keepalived.pid
+KillMode=process
+RemainAfterExit=yes
+# Read configuration variable file if it is present
+EnvironmentFile=/etc/default/keepalived
+# Started by the vyatta cli
+ExecStart=/usr/sbin/keepalived-wrapper $DAEMON_ARGS
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill $MAINPID
+
+[Install]
+WantedBy=multi-user.target

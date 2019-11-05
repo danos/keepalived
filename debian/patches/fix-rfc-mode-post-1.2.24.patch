@@ -1,0 +1,120 @@
+---
+ keepalived/vrrp/vrrp.c |   60 +++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 44 insertions(+), 16 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1350,19 +1350,19 @@
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_DEL, VRRP_VIP_TYPE);
+ 		if (!LIST_ISEMPTY(vrrp->evip))
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_DEL, VRRP_EVIP_TYPE);
+-                if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
+-                        vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_DEL);
++        if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
++            vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_DEL);
+ 		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
+ 		vrrp->vipset = 0;
+ 	}
+ 
+-        if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
+-            if (advF) {
+-                netlink_link_up(vrrp);
+-            } else {
+-                netlink_link_down(vrrp);
+-            }
++    if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++        if (advF) {
++            netlink_link_up(vrrp);
++        } else {
++            netlink_link_down(vrrp);
+         }
++    }
+ }
+ 
+ void
+@@ -2133,7 +2133,8 @@
+ 					}
+ 					else
+ 						strcpy(vrrp->vmac_ifname, ifp->ifname);
+-					vrrp->ifp = ifp;
++					if (!__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags))
++						vrrp->ifp = ifp;
+ 					vrrp->vmac_ifindex = ifp->ifindex;
+ 					__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
+ 
+@@ -2275,8 +2276,13 @@
+ 		for (e = LIST_HEAD(vrrp->vip); e; ELEMENT_NEXT(e)) {
+ 			vip = ELEMENT_DATA(e);
+ 			if (!vip->ifa.ifa_index) {
+-				vip->ifa.ifa_index = vrrp->ifp->ifindex;
+-				vip->ifp = vrrp->ifp;
++				if (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) {
++					vip->ifa.ifa_index = vrrp->xmit_ifp->ifindex;
++					vip->ifp = vrrp->xmit_ifp;
++				} else {
++					vip->ifa.ifa_index = vrrp->ifp->ifindex;
++					vip->ifp = vrrp->ifp;
++				}
+ 			}
+ 		}
+ 	}
+@@ -2635,8 +2641,8 @@
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
+ 		if (!LIST_ISEMPTY(vrrp->evip))
+ 			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
+-                if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
+-                        vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_ADD);
++        if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
++            vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_ADD);
+ #ifdef _HAVE_FIB_ROUTING_
+ 		if (!LIST_ISEMPTY(vrrp->vroutes))
+ 			vrrp_handle_iproutes(vrrp, IPROUTE_ADD);
+@@ -2646,6 +2652,27 @@
+ 	}
+ }
+ 
++static void
++update_vip_pointers(vrrp_t * vrrp) {
++	element e;
++	list l = vrrp->vip;
++	ip_address_t *vip;
++	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
++		vip = ELEMENT_DATA(e);
++#ifdef _HAVE_VRRP_VMAC_
++		if (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) {
++			vip->ifa.ifa_index = vrrp->xmit_ifp->ifindex;
++			vip->ifp = vrrp->xmit_ifp;
++		} else {
++#endif
++			vip->ifa.ifa_index = vrrp->ifp->ifindex;
++			vip->ifp = vrrp->ifp;
++#ifdef _HAVE_VRRP_VMAC_
++		}
++#endif
++	}
++}
++
+ /* Diff when reloading configuration */
+ void
+ clear_diff_vrrp(void)
+@@ -2695,9 +2722,9 @@
+ #endif
+ 
+ #ifdef _HAVE_VRRP_VMAC_
+-                        if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
+-                            netlink_link_up(vrrp);
+-                        }
++            if (__test_bit(VRRP_VMAC_BIT, &new_vrrp->vmac_flags)) {
++				netlink_link_up(new_vrrp);
++            }
+ 			/*
+ 			 * Remove VMAC if it existed in old vrrp instance,
+ 			 * but not the new one.
+@@ -2709,6 +2736,7 @@
+ #endif
+ 
+ 			/* reset the state */
++			update_vip_pointers(new_vrrp);
+ 			reset_vrrp_state(vrrp, new_vrrp);
+ 		}
+ 	}

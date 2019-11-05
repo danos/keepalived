@@ -1,0 +1,26 @@
+---
+ keepalived/vrrp/vrrp.c |   13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2158,9 +2158,16 @@
+ 	/* Set default for accept mode if not specified. If we are running in strict mode,
+ 	 * default is to disable accept mode, otherwise default is to enable it.
+ 	 * At some point we might want to change this to make non accept_mode the default,
+-	 * to comply with the RFCs. */
+-	if (vrrp->accept == PARAMETER_UNSET)
+-		vrrp->accept = !vrrp->strict_mode;
++	 * to comply with the RFCs. 
++	 * VYATTA SPECIFIC: If there is no accept variable defined then we set it's
++	 * value to false as this is the behaviour we advertise.
++	 */
++	if (vrrp->accept == PARAMETER_UNSET) {
++		if (vrrp->version == VRRP_VERSION_3)
++			vrrp->accept = false;
++		else
++			vrrp->accept = true;
++	}
+ 
+ 	if (vrrp->accept &&
+ 	    vrrp->base_priority != VRRP_PRIO_OWNER &&

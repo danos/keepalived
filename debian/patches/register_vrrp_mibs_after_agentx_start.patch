@@ -1,0 +1,107 @@
+---
+ keepalived/core/snmp.c           |    4 ++++
+ keepalived/include/global_data.h |    1 +
+ keepalived/include/vrrp_snmp.h   |    1 +
+ keepalived/vrrp/vrrp_snmp.c      |   29 ++++++++++++++++++-----------
+ 4 files changed, 24 insertions(+), 11 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_snmp.c
++++ b/keepalived/vrrp/vrrp_snmp.c
+@@ -3875,16 +3875,8 @@
+ }
+ 
+ void
+-vrrp_snmp_agent_init(const char *snmp_socket)
++vrrp_snmp_register_mibs(void)
+ {
+-	/* We let the check process handle the global OID if it is running and with snmp */
+-	snmp_args_t * snmp_args = (snmp_args_t *)malloc(sizeof(snmp_args_t));
+-	snmp_args->socket = snmp_socket;
+-	snmp_args->base_mib = vrrp_handles_global_oid();
+-	snmp_args->retries = 0;
+-	thread_add_event(master, snmp_check_for_daemon, (void *)snmp_args, 0);
+-	log_message(LOG_INFO, "Check SNMP presence event added to scheduler.");
+-
+ #ifdef _WITH_SNMP_KEEPALIVED_
+ 	if (global_data->enable_snmp_keepalived)
+ 		snmp_register_mib(vrrp_oid, OID_LENGTH(vrrp_oid), "KEEPALIVED-VRRP",
+@@ -3893,22 +3885,37 @@
+ 				  sizeof(vrrp_vars)/sizeof(struct variable8));
+ #endif
+ #ifdef _WITH_SNMP_RFCV2_
+-	if (global_data->enable_snmp_rfcv2)
++	if (global_data->enable_snmp_rfcv2) {
+ 		snmp_register_mib(vrrp_rfcv2_oid, OID_LENGTH(vrrp_rfcv2_oid), "VRRP",
+ 				  (struct variable *)vrrp_rfcv2_vars,
+ 				  sizeof(struct variable8),
+ 				  sizeof(vrrp_rfcv2_vars)/sizeof(struct variable8));
++	}
+ #endif
+ #ifdef _WITH_SNMP_RFCV3_
+-	if (global_data->enable_snmp_rfcv3)
++	if (global_data->enable_snmp_rfcv3) {
+ 		snmp_register_mib(vrrp_rfcv3_oid, OID_LENGTH(vrrp_rfcv3_oid), "VRRPV3",
+ 				  (struct variable *)vrrp_rfcv3_vars,
+ 				  sizeof(struct variable8),
+ 				  sizeof(vrrp_rfcv3_vars)/sizeof(struct variable8));
++	}
+ #endif
+ }
+ 
+ void
++vrrp_snmp_agent_init(const char *snmp_socket)
++{
++	/* We let the check process handle the global OID if it is running and with snmp */
++	snmp_args_t * snmp_args = (snmp_args_t *)malloc(sizeof(snmp_args_t));
++	snmp_args->socket = snmp_socket;
++	snmp_args->base_mib = vrrp_handles_global_oid();
++	snmp_args->retries = 0;
++	thread_add_event(master, snmp_check_for_daemon, (void *)snmp_args, 0);
++	log_message(LOG_INFO, "Check SNMP presence event added to scheduler.");
++	global_data->register_vrrp_mibs = 1;
++}
++
++void
+ vrrp_snmp_agent_close(void)
+ {
+ #ifdef _WITH_SNMP_KEEPALIVED_
+--- a/keepalived/core/snmp.c
++++ b/keepalived/core/snmp.c
+@@ -29,6 +29,7 @@
+ #include "main.h"
+ #include "scheduler.h"
+ #include "timer.h"
++#include "vrrp_snmp.h"
+ 
+ #include <net-snmp/agent/agent_sysORTable.h>
+ 
+@@ -305,6 +306,9 @@
+ 	log_message(LOG_DEBUG, "SNMPD is running");
+ 	snmp_agent_init(args->socket, args->base_mib);
+ 	free((void *)args);
++	if (global_data->register_vrrp_mibs)
++		vrrp_snmp_register_mibs();
++	global_data->register_vrrp_mibs = 0;
+ 	return 0;
+ }
+ 
+--- a/keepalived/include/vrrp_snmp.h
++++ b/keepalived/include/vrrp_snmp.h
+@@ -63,6 +63,7 @@
+ /* Prototypes */
+ extern void vrrp_snmp_agent_init(const char *);
+ extern void vrrp_snmp_agent_close(void);
++extern void vrrp_snmp_register_mibs(void);
+ 
+ #ifdef _WITH_SNMP_KEEPALIVED_
+ extern void vrrp_snmp_instance_trap(vrrp_t *);
+--- a/keepalived/include/global_data.h
++++ b/keepalived/include/global_data.h
+@@ -118,6 +118,7 @@
+ 	bool				enable_snmp_keepalived;
+ 	bool				enable_snmp_rfcv2;
+ 	bool				enable_snmp_rfcv3;
++	bool 				register_vrrp_mibs;
+ #endif
+ #ifdef _WITH_LVS_
+ 	bool				enable_snmp_checker;

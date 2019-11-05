@@ -1,0 +1,45 @@
+##Recommended critical upstream fix
+fix_ipv6_always_using_v3
+
+##Upstream Candidates - Divergence in use of vMAC code.
+lvs_problems.patch # Upstream should have this in the next few days (Nov-03-2016) https://github.com/acassen/keepalived/pull/447
+0193-Cleanup-RFC-Compliant-implementation.patch
+update-vmac-intf-on-state-change
+fix-multiple-rfc-groups-on-one-interface.patch
+fix-incorrect-intf-pointer-after-reload.patch
+use-rfc-vmac-for-v3-ipv6.patch
+fix-vrrp-preemption-takes-too-long
+upstream_regression_redhat_not_processing_groups
+fix-rfc-mode-post-1.2.24.patch
+fix_rfc_election.patch
+handle-thread-cancel-for-timeout-threads.patch
+
+##Not Upstream Candidates
+fix_sync_timers.patch
+vyatta-if-additions.patch
+add_handler_for_agent_x_config.patch
+add-dynamic-ipao-detection.patch
+stop_incorrect_ip_route_removal.patch
+bind-send-socket-to-interface-also-for-multicast.patch
+
+##Upstream reversions
+check_for_snmp_presence.patch
+make_no_accept_default.patch
+enhance-vrrp-notify-handler
+
+##Already merged upstream, awaiting downstream sync
+
+##Temporary patch to fix reloading of keepalived config.
+delete_vmac_interface_on_reload.patch
+fix-deb9-build.patch
+register_vrrp_mibs_after_agentx_start.patch
+add_pathmon_tracking
+stop_thread_cancel_corrupting_unused_thread_list.patch
+improve_error_checking_and_reporting_in_vrrp_send_adv.patch
+
+## Changes for terminating VRRP forus on MACVLAN
+terminate_forus_macvlan.patch
+resync_on_ENOBUFF.patch
+add_vrrp_group_start_delay.patch
+reduce_msdowntimer_when_invalid_adv_recv.patch
+dbus_reset_group_to_backup.patch
