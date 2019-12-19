@@ -1,3 +1,9 @@
+keepalived (1.2.24-git66c870aa+vyatta27) unstable; urgency=medium
+
+  * Add new properties to dbus object
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Thu, 19 Dec 2019 10:58:57 +0000
+
 keepalived (1.2.24-git66c870aa+vyatta26) unstable; urgency=medium
 
   * DANOS Import Master
