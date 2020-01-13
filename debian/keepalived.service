@@ -7,7 +7,7 @@ ConditionFileNotEmpty=/etc/keepalived/keepalived.conf
 
 [Service]
 Type=forking
-PIDFile=/var/run/keepalived.pid
+PIDFile=/run/keepalived.pid
 KillMode=process
 RemainAfterExit=yes
 # Read configuration variable file if it is present
