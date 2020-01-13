@@ -1,0 +1,107 @@
+---
+ keepalived/include/vrrp.h      |    2 +-
+ keepalived/vrrp/vrrp.c         |    2 +-
+ keepalived/vrrp/vrrp_daemon.c  |   35 +++++++++++++++++++++++++++++++++++
+ keepalived/vrrp/vrrp_netlink.c |    9 +++------
+ 4 files changed, 40 insertions(+), 8 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -360,5 +360,5 @@
+ extern void vrrp_update_saddr(vrrp_t *);
+ extern void vrrp_scan_groups_to_update_saddr(sa_family_t);
+ extern int vrrp_handle_ipv6_linklocal(vrrp_t *, int);
+-
++extern bool vrrp_check_vip_is_src_addr(ip_address_t *, struct sockaddr_storage *);
+ #endif
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1316,7 +1316,7 @@
+ 	return match;
+ }
+ 
+-static bool
++bool
+ vrrp_check_vip_is_src_addr(ip_address_t *vip, struct sockaddr_storage *saddr)
+ {
+ 	bool match = false;
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -370,6 +370,40 @@
+ }
+ #endif
+ 
++/*
++ * On occasion IPv6 VIP addresses can get added to the interface_t structure
++ * as if they are the source address to send the packet from. When keepalived reloads
++ * it removes this source address and then tries to readd it as if it is the link-local
++ * address on the interface. This creates problems with checking if the interface is up
++ * when we try to move to MASTER state instead moving to FAULT state.
++ * To get round this we delete all the VIPs as we reload, unless the VIP is an IPAO we don't
++ * delete those addresses.
++ */
++static void
++vrrp_delete_all_vips(){
++    element e, e2;
++    vrrp_t *vrrp;
++	ip_address_t *vip;
++
++    if (!vrrp_data)
++        return;
++
++    for (e = LIST_HEAD(vrrp_data->vrrp); e; ELEMENT_NEXT(e)) {
++        vrrp = ELEMENT_DATA(e);
++		if (!vrrp->addr_owner)
++			netlink_iplist(vrrp->vip, IPADDRESS_DEL);
++		else {
++			for (e2 = LIST_HEAD(vrrp->vip); e2; ELEMENT_NEXT(e2)) {
++				vip = ELEMENT_DATA(e2);
++				if (!vrrp_check_vip_is_src_addr(vip, &vrrp->saddr)) {
++					netlink_ipaddress(vip, IPADDRESS_DEL);
++				}
++			}
++		}
++    }
++    return;
++}
++
+ /* Reload thread */
+ static int
+ reload_vrrp_thread(__attribute__((unused)) thread_t * thread)
+@@ -382,6 +416,7 @@
+ #ifdef _HAVE_VRRP_VMAC_
+         vrrp_delete_all_vmac_interfaces();
+ #endif
++	vrrp_delete_all_vips();
+ 	kernel_netlink_close();
+ 	thread_cleanup_master(master);
+ #ifdef _WITH_LVS_
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -518,23 +518,20 @@
+ 			}
+ 		}
+ 	} else {
+-		struct sockaddr_storage ipv6_sock_addr;
+-
+-		if (!ifp->sin6_addr.s6_addr16[0] &&
++		if (IN6_IS_ADDR_UNSPECIFIED(&(ifp->sin6_addr)) &&
+ 				ifa->ifa_scope == RT_SCOPE_LINK &&
+ 				h->nlmsg_type == RTM_NEWADDR &&
+ 				ifa->ifa_prefixlen == 64) {
++
+ 			ifp->sin6_addr = *(struct in6_addr *) addr;
+-			inet_ip6tosockaddr(&ifp->sin6_addr, &ipv6_sock_addr);
+ 			vrrp_scan_groups_to_update_saddr(AF_INET6);
+ 		} else {
+-			if (IN6_ARE_ADDR_EQUAL(&ifp->sin6_addr, (struct in6_addr *)addr) &&
++			if (IN6_ARE_ADDR_EQUAL(&(ifp->sin6_addr), (struct in6_addr *)&addr) &&
+ 					(h->nlmsg_type == RTM_DELADDR)) {
+ 				/*
+ 				 * The interface's link-local IPv6 address has
+ 				 * been deleted, so forget it.
+ 				 */
+-				inet_ip6tosockaddr((struct in6_addr *)addr, &ipv6_sock_addr);
+ 				memset(&ifp->sin6_addr, 0, sizeof(struct in6_addr));
+ 				vrrp_scan_groups_to_update_saddr(AF_INET6);
+ 			}

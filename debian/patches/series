@@ -47,3 +47,4 @@ add-route-to-tracking.patch
 per_packet_debugging.patch
 vci_dbus_enhancements.patch
 check-ipv6-global-addresses-for-ipao.patch
+IPv6-intf-link-local-being-lost-on-reload.patch
