@@ -1,0 +1,48 @@
+---
+ keepalived/vrrp/vrrp.c |   28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1292,6 +1292,31 @@
+ }
+ 
+ static bool
++vrrp_check_ipv6_globals_for_ipao(ip_address_t *vip, const char * if_name)
++{
++	bool match = false;
++	struct ifaddrs *ifa;
++
++	if (vip->ifa.ifa_family != AF_INET6)
++		return match;
++
++	for (ifa = global_data->local_addresses; ifa != NULL; ifa = ifa->ifa_next) {
++		if (ifa->ifa_addr == NULL ||
++				ifa->ifa_addr->sa_family != AF_INET6 ||
++				strncmp(if_name, ifa->ifa_name, IF_NAMESIZE) != 0)
++			continue;
++		if (inet_inaddrcmp(vip->ifa.ifa_family,
++				&(vip->u.sin6_addr),
++				&(((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr)) == 0) {
++			match = true;
++			break;
++		}
++	}
++
++	return match;
++}
++
++static bool
+ vrrp_check_vip_is_src_addr(ip_address_t *vip, struct sockaddr_storage *saddr)
+ {
+ 	bool match = false;
+@@ -1325,7 +1350,8 @@
+ 	vrrp->addr_owner = false;
+ 	for (e = LIST_HEAD(vrrp->vip); e; ELEMENT_NEXT(e)) {
+ 		vip = ELEMENT_DATA(e);
+-		if (vrrp_check_vip_is_src_addr(vip, &vrrp->saddr)) {
++		if (vrrp_check_vip_is_src_addr(vip, &vrrp->saddr) ||
++				vrrp_check_ipv6_globals_for_ipao(vip, IF_NAME(IF_BASE_IFP(vrrp->ifp)))) {
+ 			vrrp->addr_owner = true;
+ 			break;
+ 		}
