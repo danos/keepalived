@@ -1,0 +1,67 @@
+---
+ keepalived/include/vrrp_if.h   |    5 +++++
+ keepalived/vrrp/vrrp_if.c      |    8 +++++++-
+ keepalived/vrrp/vrrp_netlink.c |    7 +++++++
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+--- a/keepalived/include/vrrp_if.h
++++ b/keepalived/include/vrrp_if.h
+@@ -31,6 +31,8 @@
+ 
+ /* needed to get correct values for SIOC* */
+ #include <linux/sockios.h>
++/* Need expanded IFF_ values for IFF_LOWER_UP */
++#include <linux/if.h>
+ 
+ /* local includes */
+ #include "scheduler.h"
+@@ -97,6 +99,7 @@
+ 	uint32_t		reset_arp_filter_value;	/* Original value of arp_filter to be restored */
+ 	uint32_t		reset_promote_secondaries; /* Count of how many vrrps have changed promote_secondaries on interface */
+ 	bool			promote_secondaries_already_set; /* Set if promote_secondaries already set on interface */
++	bool			carrier_is_up; /* Carrier for interface is up (useful for bonded interfaces)*/
+ } interface_t;
+ 
+ #define GARP_DELAY_PTR(X) ((X)->switch_delay ? (X)->switch_delay : &((X)->if_delay))
+@@ -126,6 +129,8 @@
+ #define IF_LINKBEAT(X) ((X)->linkbeat)
+ #define IF_ISUP(X) (((X)->flags & IFF_UP)      && \
+ 		    ((X)->flags & IFF_RUNNING) && \
++		    ((X)->flags & IFF_LOWER_UP) && \
++		    ((X)->carrier_is_up) && \
+ 		    if_linkbeat(X))
+ 
+ /* Global data */
+--- a/keepalived/vrrp/vrrp_if.c
++++ b/keepalived/vrrp/vrrp_if.c
+@@ -405,7 +405,13 @@
+ 	if (ifp->flags & IFF_RUNNING)
+ 		log_message(LOG_INFO, " is RUNNING");
+ 
+-	if (!(ifp->flags & IFF_UP) && !(ifp->flags & IFF_RUNNING))
++	if (ifp->flags & IFF_LOWER_UP)
++		log_message(LOG_INFO, " is LOWER UP");
++
++	if (ifp->carrier_is_up)
++		log_message(LOG_INFO, "is CARRIER UP");
++
++	if (!(ifp->flags & IFF_LOWER_UP) && !(ifp->flags & IFF_UP) && !(ifp->flags & IFF_RUNNING) && (!ifp->carrier_is_up))
+ 		log_message(LOG_INFO, " is DOWN");
+ 
+ 	log_message(LOG_INFO, " MTU = %d", ifp->mtu);
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -823,6 +823,13 @@
+ 		}
+ 	}
+ 
++	if (tb[IFLA_CARRIER]) {
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]));
++		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++	} else {
++		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
++		ifp->carrier_is_up = 1;
++	}
+ #ifdef _HAVE_VRRP_VMAC_
+ 	/* See if this interface is a MACVLAN of ours */
+ 	if (tb[IFLA_LINKINFO] && tb[IFLA_LINK]){
