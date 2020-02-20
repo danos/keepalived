@@ -68,7 +68,7 @@
 +					ent->args = g_variant_new("(u)", vrrp->last_transition.tv_sec);
 +				else if (ent->action == DBUS_GET_SYNC_GROUP)
 +					if (vrrp->sync != NULL)
-+						ent->args = g_variant_new("(s)", vrrp->sync->iname);
++						ent->args = g_variant_new("(s)", GROUP_NAME(vrrp->sync));
 +					else
 +						ent->args = g_variant_new("(s)", "");
  				else
