@@ -1,0 +1,79 @@
+---
+ keepalived/include/vrrp_sync.h |    2 +-
+ keepalived/vrrp/vrrp.c         |    2 +-
+ keepalived/vrrp/vrrp_sync.c    |   23 ++++++++++++++++++++++-
+ 3 files changed, 24 insertions(+), 3 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -101,12 +101,15 @@
+ 
+ /* Set instances group pointer */
+ void
+-vrrp_sync_set_group(vrrp_sgroup_t *vgroup)
++vrrp_sync_set_group(vrrp_sgroup_t *vgroup, bool reload)
+ {
+ 	vrrp_t *vrrp;
+ 	char *str;
+ 	unsigned int i;
+ 	vrrp_t *vrrp_last = NULL;
++	uint lowest_state = 100; // 99 is the highest valid state in keepalived FSM
++	int prev_state = -1;
++	bool want_states_synced = true;
+ 
+ 	/* Can't handle no members of the group */
+ 	if (!vgroup->iname)
+@@ -124,6 +127,18 @@
+ 				list_add(vgroup->index_list, vrrp);
+ 				vrrp->sync = vgroup;
+ 				vrrp_last = vrrp;
++				log_message(LOG_INFO, "Adding (%s) to sync-group (%s)", vrrp->iname, GROUP_NAME(vgroup));
++				if (reload) {
++					if (vrrp->wantstate < lowest_state)
++						lowest_state = vrrp->wantstate;
++					if (want_states_synced) {
++						if (prev_state == -1) {
++							prev_state = vrrp->wantstate;
++						} else if (prev_state != vrrp->wantstate) {
++							want_states_synced = false;
++						}
++					}
++				}
+ 			}
+ 		}
+ 		else
+@@ -136,6 +151,12 @@
+ 		/* If there is only one entry in the group, remove the group from the vrrp entry */
+ 		if (vrrp_last)
+ 			vrrp_last->sync = NULL;
++	} else if (!want_states_synced){
++		element e;
++		for (e = LIST_HEAD(vgroup->index_list); e; ELEMENT_NEXT(e)) {
++			vrrp = ELEMENT_DATA(e);
++			vrrp->wantstate = lowest_state;
++		}
+ 	}
+ }
+ 
+--- a/keepalived/include/vrrp_sync.h
++++ b/keepalived/include/vrrp_sync.h
+@@ -43,7 +43,7 @@
+ /* extern prototypes */
+ extern void vrrp_init_instance_sands(vrrp_t *);
+ extern void vrrp_sync_smtp_notifier(vrrp_sgroup_t *);
+-extern void vrrp_sync_set_group(vrrp_sgroup_t *);
++extern void vrrp_sync_set_group(vrrp_sgroup_t *, bool);
+ extern int vrrp_sync_leave_fault(vrrp_t *);
+ extern int vrrp_sync_goto_master(vrrp_t *);
+ extern void vrrp_sync_backup(vrrp_t *, bool);
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2744,7 +2744,7 @@
+ 	for (e = LIST_HEAD(vrrp_data->vrrp_sync_group); e; e = next) {
+ 		next = e->next;
+ 		sgroup = ELEMENT_DATA(e);
+-		vrrp_sync_set_group(sgroup);
++		vrrp_sync_set_group(sgroup, reload);
+ 		if (LIST_ISEMPTY(sgroup->index_list) ||
+ 			LIST_SIZE(sgroup->index_list) <= 1) {
+ 			free_list_element(vrrp_data->vrrp_sync_group, e);
