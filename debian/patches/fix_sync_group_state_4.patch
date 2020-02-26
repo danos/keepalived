@@ -68,7 +68,7 @@
  extern void vrrp_sync_backup(vrrp_t *, bool);
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2744,7 +2744,7 @@
+@@ -2748,7 +2748,7 @@
  	for (e = LIST_HEAD(vrrp_data->vrrp_sync_group); e; e = next) {
  		next = e->next;
  		sgroup = ELEMENT_DATA(e);
