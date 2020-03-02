@@ -1,3 +1,12 @@
+keepalived (1.2.24-git66c870aa+vyatta28) unstable; urgency=medium
+
+  * Update service file PID line
+  * Bugfix/check for IPAO global IPv6 addresses
+  * Fix IPv6 Source address being removed on reload
+  * Enhance IF_ISUP check to include lower layers
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Mon, 02 Mar 2020 12:04:02 +0000
+
 keepalived (1.2.24-git66c870aa+vyatta27) unstable; urgency=medium
 
   * Add new properties to dbus object
