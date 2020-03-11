@@ -1,0 +1,52 @@
+---
+ keepalived/vrrp/vrrp_snmp.c |   26 ++++++++++++++++++++++----
+ 1 file changed, 22 insertions(+), 4 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_snmp.c
++++ b/keepalived/vrrp/vrrp_snmp.c
+@@ -2807,15 +2807,28 @@
+ 			long_ret.u = LIST_SIZE(rt->vip);
+ 		return (u_char*)&long_ret;
+ 	case VRRP_RFC_SNMP_OPER_MIP:
+-		return (u_char*)&((struct sockaddr_in *)&rt->master_saddr)->sin_addr.s_addr;
++		if (rt->state != VRRP_STATE_MAST) {
++			if (rt->family == AF_INET) {
++				*var_len = sizeof(struct in_addr);
++				return (u_char*)&((struct sockaddr_in *)&rt->master_saddr)->sin_addr;
++			}
++			*var_len = sizeof(struct in6_addr);
++			return (u_char*)&((struct sockaddr_in6 *)&rt->master_saddr)->sin6_addr;
++		}
++		/* Fall through. If we are master, we want to return the Primary IP address */
+ 	case VRRP_RFC_SNMP_OPER_PIP:
+ #ifdef _HAVE_VRRP_VMAC_
+ 		if (rt->ifp->vmac)
+ 			ifp = if_get_by_ifindex(rt->ifp->base_ifindex);
+ 		else
+ #endif
+-			ifp = rt->ifp;
+-		return (u_char*)&ifp->sin_addr;
++		ifp = rt->ifp;
++		if (rt->family == AF_INET) {
++			*var_len = sizeof(struct in_addr);
++			return (u_char*)&ifp->sin_addr;
++		}
++		*var_len = sizeof(struct in6_addr);
++		return (u_char*)&ifp->sin6_addr;
+ 	case VRRP_RFC_SNMP_OPER_AUTH_TYPE:
+ #ifdef _WITH_VRRP_AUTH_
+ 		long_ret.s = rt->auth_type + 1;
+@@ -2876,7 +2889,12 @@
+ 
+ 	switch (vp->magic) {
+ 	case VRRP_RFC_SNMP_ASSOC_IP_ADDR:
+-		return (u_char*)&addr->u.sin.sin_addr;
++		if (addr->ifa.ifa_family == AF_INET) {
++			*var_len = sizeof(struct in_addr);
++			return (u_char*)&addr->u.sin.sin_addr;
++		}
++		*var_len = sizeof(struct in6_addr);
++		return (u_char*)&addr->u.sin6_addr;
+ 	case VRRP_RFC_SNMP_ASSOC_IP_ADDR_ROW:
+ 		/* If we implement write access, then this could be 2 for down */
+ 		long_ret.u = 1;
