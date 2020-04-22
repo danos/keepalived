@@ -1,0 +1,79 @@
+---
+ keepalived/core/global_data.c |   13 +++++++++++--
+ lib/utils.c                   |   18 ++++++++++++++----
+ 2 files changed, 25 insertions(+), 6 deletions(-)
+
+--- a/keepalived/core/global_data.c
++++ b/keepalived/core/global_data.c
+@@ -197,8 +197,17 @@
+ 	      !data->email_from)))
+ 		local_name = get_local_name();
+ 
+-	if (!data->router_id)
++	if (!data->router_id) {
++		if (local_name == NULL){
++			const char* failure_name = "ROUTER NAME NOT FOUND";
++			int len = strlen(failure_name);
++			local_name = MALLOC(len + 1);
++			if (local_name) {
++				memcpy(local_name, failure_name, len);
++			}
++		}
+ 		set_default_router_id(data, local_name);
++	}
+ 
+ 	if (data->smtp_server.ss_family) {
+ 		if (!data->smtp_connection_to)
+@@ -243,7 +252,7 @@
+ 		FREE_PTR(network_namespace);
+ #endif
+ 	FREE(data);
+-	data = NULL;
++	global_data = NULL;
+ }
+ 
+ void
+--- a/lib/utils.c
++++ b/lib/utils.c
+@@ -479,16 +479,21 @@
+ 	struct utsname name;
+ 	struct addrinfo hints, *res = NULL;
+ 	char *canonname = NULL;
++	int gai_result;
+ 	size_t len = 0;
+ 
+ 	memset(&hints, 0, sizeof(struct addrinfo));
++	hints.ai_family = AF_UNSPEC;
+ 	hints.ai_flags = AI_CANONNAME;
+ 
+ 	if (uname(&name) < 0)
+ 		return NULL;
+ 
+-	if (getaddrinfo(name.nodename, NULL, &hints, &res) != 0)
+-		return NULL;
++	if ((gai_result = getaddrinfo(name.nodename, NULL, &hints, &res)) != 0) {
++		log_message(LOG_WARNING, "Failed to get the getaddrinfo.");
++		log_message(LOG_WARNING, "getaddrinfo: %s.", gai_strerror(gai_result));
++		log_message(LOG_WARNING, "Attempting to use uname nodename value %s as Router ID.", name.nodename);
++	}
+ 
+ 	if (res && res->ai_canonname) {
+ 		len = strlen(res->ai_canonname);
+@@ -496,10 +501,15 @@
+ 		if (canonname) {
+ 			memcpy(canonname, res->ai_canonname, len);
+ 		}
++		freeaddrinfo(res);
++	} else {
++		len = strlen(name.nodename);
++		canonname = MALLOC(len + 1);
++		if (canonname) {
++			memcpy(canonname, name.nodename, len);
++		}
+ 	}
+ 
+-	freeaddrinfo(res);
+-
+ 	return canonname;
+ }
+ 

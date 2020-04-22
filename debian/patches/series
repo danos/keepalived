@@ -51,3 +51,4 @@ IPv6-intf-link-local-being-lost-on-reload.patch
 check_lower_is_up.patch
 fix_sync_group_state_4.patch
 snmp_master_address_fix.patch
+ensure_router_id_is_populated.patch
