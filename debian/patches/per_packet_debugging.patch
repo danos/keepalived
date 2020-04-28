@@ -6,8 +6,8 @@
  keepalived/vrrp/vrrp_data.c                            |    1 
  keepalived/vrrp/vrrp_dbus.c                            |   35 +++++++++++
  keepalived/vrrp/vrrp_scheduler.c                       |   51 +++++++++--------
- 7 files changed, 102 insertions(+), 23 deletions(-)
-
+ keepalived/vrrp/vrrp_sync.c                            |    8 ++
+ 8 files changed, 109 insertions(+), 24 deletions(-)
 --- a/keepalived/include/vrrp_data.h
 +++ b/keepalived/include/vrrp_data.h
 @@ -69,6 +69,7 @@
@@ -249,3 +249,20 @@
  #ifdef _WITH_DBUS_CREATE_INSTANCE_
  		else if (ent->action == DBUS_CREATE_INSTANCE) {
  			g_variant_get(ent->args, "(s)", &name);
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -211,7 +211,13 @@
+ 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+ 		isync = ELEMENT_DATA(e);
+ 		if (isync != vrrp && (isync->wantstate != VRRP_STATE_GOTO_MASTER &&
+-				      isync->wantstate != VRRP_STATE_MAST)) {
++								isync->wantstate != VRRP_STATE_MAST)) {
++			log_message(
++				LOG_INFO,
++				"VRRP_Instance(%s) should move to MASTER state but not all VRRP " \
++				"instances in VRRP_Group(%s) are moving to MASTER. Holding %s " \
++				"to the group's state.",
++				vrrp->iname, GROUP_NAME(vgroup), vrrp->iname);
+ 			return 0;
+ 		}
+ 	}
