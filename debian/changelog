@@ -1,3 +1,9 @@
+keepalived (1.2.24-git66c870aa+vyatta30) unstable; urgency=medium
+
+  * Bugfix/Ensure router_id contains valid data
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Tue, 28 Apr 2020 11:47:15 +0100
+
 keepalived (1.2.24-git66c870aa+vyatta29) unstable; urgency=medium
 
   * Bugfix/Use the correct member for SyncGroup DBus
