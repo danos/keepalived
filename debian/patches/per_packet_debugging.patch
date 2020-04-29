@@ -1,12 +1,12 @@
 ---
- keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template |   16 ++++++++
+ keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template |   16 +++++
  keepalived/include/vrrp_data.h                         |    1 
- keepalived/include/vrrp_debug.h                        |   17 ++++++++
- keepalived/vrrp/vrrp.c                                 |    4 +-
+ keepalived/include/vrrp_debug.h                        |   17 +++++
+ keepalived/vrrp/vrrp.c                                 |    4 +
  keepalived/vrrp/vrrp_data.c                            |    1 
- keepalived/vrrp/vrrp_dbus.c                            |   34 +++++++++++++++++
- keepalived/vrrp/vrrp_scheduler.c                       |   17 +++++---
- 7 files changed, 83 insertions(+), 7 deletions(-)
+ keepalived/vrrp/vrrp_dbus.c                            |   34 +++++++++++
+ keepalived/vrrp/vrrp_scheduler.c                       |   51 +++++++++--------
+ 7 files changed, 101 insertions(+), 23 deletions(-)
 
 --- a/keepalived/include/vrrp_data.h
 +++ b/keepalived/include/vrrp_data.h
@@ -59,7 +59,50 @@
  				return sock->fd_in;
  			}
  		}
-@@ -1256,7 +1258,8 @@
+@@ -1237,24 +1239,26 @@
+ 
+     /* If no instance found => ignore the advert */
+ 	if (!vrrp) {
+-		if (sock->family == AF_INET) {
+-			iph = (struct iphdr *) eth_payload;
+-			pkt_saddr_ipv4 = iph->saddr;
+-
+-			inet_ntop(AF_INET, &pkt_saddr_ipv4,
+-						ipv4_str, sizeof(ipv4_str));
+-			ip_str = ipv4_str;
+-		} else {
+-			ip6h = (struct ip6_hdr *) eth_payload;
++		if (IS_VRRP_DEBUG_PER_PACKET()) {
++			if (sock->family == AF_INET) {
++				iph = (struct iphdr *) eth_payload;
++				pkt_saddr_ipv4 = iph->saddr;
++
++				inet_ntop(AF_INET, &pkt_saddr_ipv4,
++							ipv4_str, sizeof(ipv4_str));
++				ip_str = ipv4_str;
++			} else {
++				ip6h = (struct ip6_hdr *) eth_payload;
+ 
+-			inet_ntop(AF_INET6, &ip6h->ip6_src,
+-						ipv6_str, sizeof(ipv6_str));
+-			ip_str = ipv6_str;
++				inet_ntop(AF_INET6, &ip6h->ip6_src,
++							ipv6_str, sizeof(ipv6_str));
++				ip_str = ipv6_str;
++			}
++			log_message(
++				LOG_INFO,
++				"Received packet from %s for a VRRP Instance %d which doesn't exist on receiving interface %s",
++				ip_str, hd->vrid, IF_NAME(if_get_by_ifindex(sock->recv_ifindex)));
+ 		}
+-		log_message(
+-			LOG_INFO,
+-			"Received packet from %s for a VRRP Instance %d which doesn't exist on receiving interface %s",
+-			ip_str, hd->vrid, IF_NAME(if_get_by_ifindex(sock->recv_ifindex)));
+ 		return sock->fd_in;
+     }
+ 
+@@ -1273,7 +1277,8 @@
  		 */
  		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
  			/* DROP our own packets */
@@ -69,7 +112,7 @@
  			return sock->fd_in;
  		}
  
-@@ -1282,7 +1285,8 @@
+@@ -1299,7 +1304,8 @@
  		 */
  		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
  			/* DROP our own packets */
@@ -79,7 +122,7 @@
  			return sock->fd_in;
  		}
  
-@@ -1293,9 +1297,10 @@
+@@ -1310,9 +1316,10 @@
          ip_str = ipv6_str;
      }
  

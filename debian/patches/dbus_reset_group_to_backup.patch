@@ -9,9 +9,9 @@
  keepalived/vrrp/vrrp_daemon.c                     |    5 ++
  keepalived/vrrp/vrrp_dbus.c                       |   38 ++++++++++++++++++++++
  keepalived/vrrp/vrrp_netlink.c                    |   11 ++----
- keepalived/vrrp/vrrp_scheduler.c                  |   11 +++---
+ keepalived/vrrp/vrrp_scheduler.c                  |   28 +++++++++++++---
  keepalived/vrrp/vrrp_sync.c                       |   12 +++---
- 12 files changed, 86 insertions(+), 27 deletions(-)
+ 12 files changed, 103 insertions(+), 27 deletions(-)
 
 --- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
 +++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
@@ -218,11 +218,28 @@
  
  		if (vrrp->state == VRRP_STATE_BACK)
  			log_message(LOG_INFO, "VRRP_Instance(%s) Now in BACKUP state",
-@@ -1203,6 +1203,7 @@
+@@ -1203,6 +1203,24 @@
  
      /* If no instance found => ignore the advert */
  	if (!vrrp) {
-+		log_message(LOG_INFO, "No VRRP instance found for packet");
++		if (sock->family == AF_INET) {
++			iph = (struct iphdr *) eth_payload;
++			pkt_saddr_ipv4 = iph->saddr;
++
++			inet_ntop(AF_INET, &pkt_saddr_ipv4,
++						ipv4_str, sizeof(ipv4_str));
++			ip_str = ipv4_str;
++		} else {
++			ip6h = (struct ip6_hdr *) eth_payload;
++
++			inet_ntop(AF_INET6, &ip6h->ip6_src,
++						ipv6_str, sizeof(ipv6_str));
++			ip_str = ipv6_str;
++		}
++		log_message(
++			LOG_INFO,
++			"Received packet from %s for a VRRP Instance %d which doesn't exist on receiving interface %s",
++			ip_str, hd->vrid, IF_NAME(if_get_by_ifindex(sock->recv_ifindex)));
  		return sock->fd_in;
      }
  
