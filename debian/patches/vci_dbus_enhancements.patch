@@ -108,8 +108,8 @@
  	vrrp_t *vrrp;
  #ifdef _WITH_DBUS_CREATE_INSTANCE_
  	gchar *name;
-@@ -775,6 +817,29 @@
- 			vrrp_data->vrrp_debug_flag ^= debug_flag;
+@@ -776,6 +818,29 @@
+ 				vrrp_data->vrrp_debug_flag ^= debug_flag;
  			log_message(LOG_INFO, "Debug flag is now 0x%04x", vrrp_data->vrrp_debug_flag);
  		}
 +		else if (ent->action == DBUS_GET_RFC_MAPPING) {
@@ -138,7 +138,7 @@
  #ifdef _WITH_DBUS_CREATE_INSTANCE_
  		else if (ent->action == DBUS_CREATE_INSTANCE) {
  			g_variant_get(ent->args, "(s)", &name);
-@@ -817,7 +882,11 @@
+@@ -818,7 +883,11 @@
  			}
  		}
  		else if (ent->action == DBUS_GET_NAME ||
@@ -151,7 +151,7 @@
  			/* we look for the vrrp instance object that corresponds to our interface and group */
  			ent->reply = DBUS_INTERFACE_NOT_FOUND;
  
-@@ -829,6 +898,17 @@
+@@ -830,6 +899,17 @@
  					ent->args = g_variant_new("(s)", vrrp->iname);
  				else if (ent->action == DBUS_GET_STATUS)
  					ent->args = g_variant_new("(us)", vrrp->state, state_str(vrrp->state));

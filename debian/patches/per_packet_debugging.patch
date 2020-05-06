@@ -4,9 +4,9 @@
  keepalived/include/vrrp_debug.h                        |   17 +++++
  keepalived/vrrp/vrrp.c                                 |    4 +
  keepalived/vrrp/vrrp_data.c                            |    1 
- keepalived/vrrp/vrrp_dbus.c                            |   34 +++++++++++
+ keepalived/vrrp/vrrp_dbus.c                            |   35 +++++++++++
  keepalived/vrrp/vrrp_scheduler.c                       |   51 +++++++++--------
- 7 files changed, 101 insertions(+), 23 deletions(-)
+ 7 files changed, 102 insertions(+), 23 deletions(-)
 
 --- a/keepalived/include/vrrp_data.h
 +++ b/keepalived/include/vrrp_data.h
@@ -227,7 +227,7 @@
  #ifdef _WITH_DBUS_CREATE_INSTANCE_
  		else if (g_strcmp0(method_name, "CreateInstance") == 0) {
  			g_variant_get(parameters, "(ssuu)", &iname, &ifname, &ent.vrid, &family);
-@@ -741,6 +761,20 @@
+@@ -741,6 +761,21 @@
  			log_message(LOG_INFO, "Printing VRRP stats on DBus request");
  			vrrp_print_stats();
  		}
@@ -242,7 +242,8 @@
 +			uint32_t debug_flag;
 +			g_variant_get(ent->args, "(u)", &debug_flag);
 +			log_message(LOG_INFO, "Remove debug flag 0x%04x", debug_flag);
-+			vrrp_data->vrrp_debug_flag ^= debug_flag;
++			if (vrrp_data->vrrp_debug_flag & debug_flag)
++				vrrp_data->vrrp_debug_flag ^= debug_flag;
 +			log_message(LOG_INFO, "Debug flag is now 0x%04x", vrrp_data->vrrp_debug_flag);
 +		}
  #ifdef _WITH_DBUS_CREATE_INSTANCE_
