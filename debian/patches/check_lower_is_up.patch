@@ -1,8 +1,8 @@
 ---
  keepalived/include/vrrp_if.h   |    5 +++++
  keepalived/vrrp/vrrp_if.c      |    8 +++++++-
- keepalived/vrrp/vrrp_netlink.c |    7 +++++++
- 3 files changed, 19 insertions(+), 1 deletion(-)
+ keepalived/vrrp/vrrp_netlink.c |   26 +++++++++++++++++++++++---
+ 3 files changed, 35 insertions(+), 4 deletions(-)
 
 --- a/keepalived/include/vrrp_if.h
 +++ b/keepalived/include/vrrp_if.h
@@ -43,7 +43,7 @@
 +		log_message(LOG_INFO, " is LOWER UP");
 +
 +	if (ifp->carrier_is_up)
-+		log_message(LOG_INFO, "is CARRIER UP");
++		log_message(LOG_INFO, " is CARRIER UP");
 +
 +	if (!(ifp->flags & IFF_LOWER_UP) && !(ifp->flags & IFF_UP) && !(ifp->flags & IFF_RUNNING) && (!ifp->carrier_is_up))
  		log_message(LOG_INFO, " is DOWN");
@@ -56,8 +56,8 @@
  	}
  
 +	if (tb[IFLA_CARRIER]) {
-+		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]));
 +		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, ifp->carrier_is_up);
 +	} else {
 +		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
 +		ifp->carrier_is_up = 1;
@@ -65,3 +65,57 @@
  #ifdef _HAVE_VRRP_VMAC_
  	/* See if this interface is a MACVLAN of ours */
  	if (tb[IFLA_LINKINFO] && tb[IFLA_LINK]){
+@@ -909,6 +916,13 @@
+ #endif
+ 			ifp->flags = ifi->ifi_flags;
+ 		}
++		if (tb[IFLA_CARRIER]) {
++			ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++			log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, ifp->carrier_is_up);
++		} else {
++			log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
++			ifp->carrier_is_up = 1;
++		}
+ 		return 0;
+ 	}
+ 
+@@ -1123,6 +1137,7 @@
+ 	interface_t *ifp;
+ 	size_t len;
+ 	int status;
++	char *name;
+ 
+ 	ifi = NLMSG_DATA(h);
+ 	if (!(h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK))
+@@ -1137,6 +1152,7 @@
+ 	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
+ 	if (tb[IFLA_IFNAME] == NULL)
+ 		return -1;
++	name = (char *) RTA_DATA(tb[IFLA_IFNAME]);
+ 
+ 	/* ignore loopback device */
+ 	if (ifi->ifi_type == ARPHRD_LOOPBACK)
+@@ -1150,8 +1166,6 @@
+ 	ifp = if_get_by_ifindex((ifindex_t)ifi->ifi_index);
+ 	if (!ifp) {
+ 		if (h->nlmsg_type == RTM_NEWLINK) {
+-			char *name;
+-			name = (char *) RTA_DATA(tb[IFLA_IFNAME]);
+ 			ifp = if_get_by_ifname(name);
+ 			if (!ifp) {
+ 				ifp = (interface_t *) MALLOC(sizeof(interface_t));
+@@ -1183,7 +1197,13 @@
+ #else
+ 	ifp->flags = ifi->ifi_flags;
+ #endif
+-
++	if (tb[IFLA_CARRIER]) {
++		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, ifp->carrier_is_up);
++	} else {
++		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
++		ifp->carrier_is_up = 1;
++	}
+ 	return 0;
+ }
+ 
