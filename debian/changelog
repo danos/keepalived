@@ -1,3 +1,11 @@
+keepalived (1.2.24-git66c870aa+vyatta31) unstable; urgency=medium
+
+  * Bugfix/Reset prefix when deleting IP addresses
+  * Bugfix/Sync carrier_is_up from netlink messages
+  * Bugfix/No instance log message wasn't intuitive
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Tue, 12 May 2020 17:25:27 +0100
+
 keepalived (1.2.24-git66c870aa+vyatta30) unstable; urgency=medium
 
   * Bugfix/Ensure router_id contains valid data
