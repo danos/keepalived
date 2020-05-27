@@ -1,3 +1,9 @@
+keepalived (1.2.24-git66c870aa+vyatta32) unstable; urgency=medium
+
+  * Add DBus method to retrieve recv intf
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Wed, 27 May 2020 10:32:48 +0100
+
 keepalived (1.2.24-git66c870aa+vyatta31) unstable; urgency=medium
 
   * Bugfix/Reset prefix when deleting IP addresses
