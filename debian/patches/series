@@ -53,3 +53,4 @@ fix_sync_group_state_4.patch
 snmp_master_address_fix.patch
 ensure_router_id_is_populated.patch
 add_effective_and_configure_prefix.patch
+reset_groups_to_backup_on_configured_priority_change.patch

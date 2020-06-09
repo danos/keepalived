@@ -1,0 +1,17 @@
+---
+ keepalived/vrrp/vrrp.c |    4 ++++
+ 1 file changed, 4 insertions(+)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2961,6 +2961,10 @@
+ 	vrrp->state = old_vrrp->state;
+ 	vrrp->init_state = old_vrrp->state;
+ 	vrrp->wantstate = old_vrrp->state;
++	if (old_vrrp->base_priority != vrrp->base_priority) {
++		vrrp->state = vrrp->init_state = vrrp->wantstate = VRRP_STATE_BACK;
++	}
++
+ 	if (!old_vrrp->sync)
+ 		vrrp->effective_priority = old_vrrp->effective_priority;
+ 	/* Save old stats */
