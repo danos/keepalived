@@ -1,0 +1,383 @@
+---
+ configure                        |   28 +++++++++++++++++++
+ configure.ac                     |   12 ++++++++
+ keepalived.spec.in               |    1 
+ keepalived/include/vrrp_daemon.h |    6 ++++
+ keepalived/include/vrrp_if.h     |    9 ++++++
+ keepalived/vrrp/vrrp_daemon.c    |    3 --
+ keepalived/vrrp/vrrp_dbus.c      |   57 ++++++++-------------------------------
+ keepalived/vrrp/vrrp_netlink.c   |   18 ++++++++++++
+ keepalived/vrrp/vrrp_parser.c    |   23 ++++++++++++++-
+ keepalived/vrrp/vrrp_scheduler.c |    8 +++++
+ 10 files changed, 116 insertions(+), 49 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -194,7 +194,13 @@
+ 	if (vector_size(strvec) >= 2) {
+ 		strncpy(vrrp->vmac_ifname, vector_slot(strvec, 1), IFNAMSIZ - 1);
+ 
+-                netlink_link_add_vmac(vrrp);
++#ifdef _DEFER_INTF_
++		if (vrrp->ifp->deferred == 0){
++			log_message(LOG_INFO, "Deferred interface creation for %s not creating VMAC yet", IF_NAME(vrrp->ifp));
++			return;
++		}
++#endif
++		netlink_link_add_vmac(vrrp);
+ 
+ 		/* Check if the interface exists and is a macvlan we can use */
+ 		if ((ifp = if_get_by_ifname(vrrp->vmac_ifname)) &&
+@@ -264,12 +270,25 @@
+ 
+ 	vrrp->ifp = if_get_by_ifname(name);
+ 	if (!vrrp->ifp) {
++#ifdef _DEFER_INTF_
++		log_message(LOG_INFO, "%s not found in intf list, using deferred creation",
++					name);
++		interface_t *ifp = (interface_t *) MALLOC(sizeof(interface_t));
++		memset(ifp, 0, sizeof(interface_t));
++		memcpy(ifp->ifname, name, strlen(name));
++		ifp->deferred = INTF_NOTPRESENT;
++		if_add_queue(ifp);
++		vrrp->ifp = if_get_by_ifname(name);
++	} else {
++		vrrp->ifp->deferred = INTF_PRESENT;
++#else
+ 		log_message(LOG_INFO, "Cant find interface %s for vrrp_instance %s !!!"
+ 				    , name, vrrp->iname);
+ 		return;
++#endif
+ 	}
+ 
+-        vrrp->xmit_ifp = vrrp->ifp;
++	vrrp->xmit_ifp = vrrp->ifp;
+ }
+ static void
+ vrrp_track_int_handler(__attribute__((unused)) vector_t *strvec)
+--- a/configure
++++ b/configure
+@@ -648,6 +648,8 @@
+ DBUS_CREATE_INSTANCE_TRUE
+ WITH_DBUS_FALSE
+ WITH_DBUS_TRUE
++DEFER_FALSE
++DEFER_TRUE
+ SNMP_RFCV3_FALSE
+ SNMP_RFCV3_TRUE
+ SNMP_RFCV2_FALSE
+@@ -803,6 +805,7 @@
+ enable_snmp_reply_v3_for_v2
+ enable_dbus
+ enable_dbus_create_instance
++enable_deferred_intf
+ enable_sha1
+ enable_vrrp_auth
+ enable_routes
+@@ -1461,6 +1464,7 @@
+   --disable-snmp-reply-v3-for-v2 disable RFC6257 responses for VRRPv2 instances
+   --enable-dbus           compile with dbus support
+   --enable-dbus-create-instance compile with dbus support for creating instances
++  --enable-deferred-intf  compile with deferred interface creation
+   --enable-sha1           compile with SHA1 support
+   --disable-vrrp-auth     compile without VRRP authentication
+   --disable-routes        compile without ip rules/routes
+@@ -3433,6 +3437,11 @@
+   enableval=$enable_dbus_create_instance;
+ fi
+ 
++# Check whether --enable-deferred-intf was given.
++if test "${enable_deferred_intf+set}" = set; then :
++  enableval=$enable_deferred_intf;
++fi
++
+ # Check whether --enable-sha1 was given.
+ if test "${enable_sha1+set}" = set; then :
+   enableval=$enable_sha1;
+@@ -8627,6 +8636,21 @@
+   DBUS_CREATE_INSTANCE_FALSE=
+ fi
+ 
++DEFER_SUPPORT=No
++if test "$enable_deferred_intf" = yes; then
++  DEFER_SUPPORT=Yes
++
++$as_echo "#define _DEFER_INTF_  1 " >>confdefs.h
++
++  BUILD_OPTIONS="$BUILD_OPTIONS DEFER"
++fi
++if test $DEFER_SUPPORT = Yes; then
++  DEFER_TRUE=
++  DEFER_FALSE='#'
++else
++  DEFER_TRUE='#'
++  DEFER_FALSE=
++fi
+ 
+ SHA1_SUPPORT=No
+ if test "${enable_sha1}" = yes; then
+@@ -9152,6 +9176,10 @@
+   as_fn_error $? "conditional \"DBUS_CREATE_INSTANCE\" was never defined.
+ Usually this means the macro was only invoked conditionally." "$LINENO" 5
+ fi
++if test -z "${DEFER_TRUE}" && test -z "${DEFER_FALSE}"; then
++  as_fn_error $? "conditional \"DEFER_INTF\" was never defined.
++Usually this means the macro was only invoked conditionally." "$LINENO" 5
++fi
+ if test -z "${WITH_SHA1_TRUE}" && test -z "${WITH_SHA1_FALSE}"; then
+   as_fn_error $? "conditional \"WITH_SHA1\" was never defined.
+ Usually this means the macro was only invoked conditionally." "$LINENO" 5
+--- a/configure.ac
++++ b/configure.ac
+@@ -96,6 +96,8 @@
+   [  --enable-dbus           compile with dbus support])
+ AC_ARG_ENABLE(dbus-create-instance,
+   [  --enable-dbus-create-instance compile with dbus support for creating instances])
++AC_ARG_ENABLE(deferred-intf,
++  [  --enable-deferred-intf  compile with deferred interface creation])
+ AC_ARG_ENABLE(sha1,
+   [  --enable-sha1           compile with SHA1 support])
+ AC_ARG_ENABLE(vrrp-auth,
+@@ -940,6 +942,15 @@
+ AM_CONDITIONAL([WITH_DBUS], [test $DBUS_SUPPORT = Yes])
+ AM_CONDITIONAL([DBUS_CREATE_INSTANCE], [test $DBUS_CREATE_INSTANCE = Yes])
+ 
++dnl ----[ Check for deferred interface support ]----
++DEFERRED_SUPPORT=No
++if test "$enable_deferred_intf" = yes; then
++  DEFERRED_SUPPORT=Yes
++  AC_DEFINE([_DEFER_INTF_], [ 1 ], [Define to 1 to have deferred intf creation])
++  add_build_opt([DEFER])
++fi
++AM_CONDITIONAL([DEFER_INTF], [test $DEFERRED_SUPPORT = Yes])
++
+ dnl ----[ SHA1 or not ? ]----
+ SHA1_SUPPORT=No
+ if test "${enable_sha1}" = yes; then
+@@ -1100,6 +1111,7 @@
+ if test ${DBUS_SUPPORT} = Yes; then
+   echo "DBUS create instance     : ${DBUS_CREATE_INSTANCE}"
+ fi
++echo "Deferred inttf support   : ${DEFERRED_SUPPORT}"
+ echo "SHA1 support             : ${SHA1_SUPPORT}"
+ echo "Use Debug flags          : ${ENABLE_DEBUG}"
+ echo "Stacktrace support       : ${ENABLE_STACKTRACE}"
+--- a/keepalived.spec.in
++++ b/keepalived.spec.in
+@@ -53,6 +53,7 @@
+ @SNMP_RFC_TRUE@CONFIG_OPTS="$CONFIG_OPTS --enable-snmp-rfc"
+ @WITH_SHA1_TRUE@CONFIG_OPTS="$CONFIG_OPTS --enable-sha1"
+ @WITH_DBUS_TRUE@CONFIG_OPTS="$CONFIG_OPTS --enable-dbus"
++@WITH_DEFERRED_TRUE@CONFIG_OPTS="$CONFIG_OPTS --enable-deferred-intf"
+ %{?el3:export CPPFLAGS="-I/usr/kerberos/include"}
+ %{?rh9:export CPPFLAGS="-I/usr/kerberos/include"}
+ %configure $CONFIG_OPTS \
+--- a/keepalived/include/vrrp_if.h
++++ b/keepalived/include/vrrp_if.h
+@@ -100,8 +100,17 @@
+ 	uint32_t		reset_promote_secondaries; /* Count of how many vrrps have changed promote_secondaries on interface */
+ 	bool			promote_secondaries_already_set; /* Set if promote_secondaries already set on interface */
+ 	bool			carrier_is_up; /* Carrier for interface is up (useful for bonded interfaces)*/
++#ifdef _DEFER_INTF_
++	uint8_t			deferred; /* Interface will appear at some point in the future, setup will be done then */
++#endif
+ } interface_t;
+ 
++#ifdef _DEFER_INTF_
++#define INTF_NOTPRESENT 0
++#define INTF_PRESENT 1
++#define INTF_COMPLETED 2
++#endif
++
+ #define GARP_DELAY_PTR(X) ((X)->switch_delay ? (X)->switch_delay : &((X)->if_delay))
+ 
+ /* Tracked interface structure definition */
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -52,6 +52,9 @@
+ #if !HAVE_DECL_SOCK_NONBLOCK
+ #include "old_socket.h"
+ #endif
++#ifdef _DEFER_INTF_
++#include "vrrp_daemon.h"
++#endif
+ 
+ /* Global vars */
+ nl_handle_t nl_cmd;	/* Command channel */
+@@ -869,6 +872,9 @@
+ #else
+ 	ifp->flags = ifi->ifi_flags;
+ #endif
++#ifdef _DEFER_INTF_
++	ifp->deferred = INTF_PRESENT;
++#endif
+ 
+ 	return 1;
+ }
+@@ -1166,16 +1172,28 @@
+ 	ifp = if_get_by_ifindex((ifindex_t)ifi->ifi_index);
+ 	if (!ifp) {
+ 		if (h->nlmsg_type == RTM_NEWLINK) {
++#ifdef _DEFER_INTF_
++			uint8_t deferred;
++#endif
+ 			ifp = if_get_by_ifname(name);
+ 			if (!ifp) {
+ 				ifp = (interface_t *) MALLOC(sizeof(interface_t));
+ 				if_add_queue(ifp);
+ 			} else {
++#ifdef _DEFER_INTF_
++				deferred = ifp->deferred;
++#endif
+ 				memset(ifp, 0, sizeof(interface_t));
+ 			}
+ 			status = netlink_if_link_populate(ifp, tb, ifi);
+ 			if (status < 0)
+ 				return -1;
++#ifdef _DEFER_INTF_
++			if (deferred == INTF_NOTPRESENT) {
++				thread_add_event(master, reload_vrrp_thread, NULL, 0);
++				return 0;
++			}
++#endif
+ 		} else {
+ 			if (__test_bit(LOG_DETAIL_BIT, &debug))
+ 				log_message(LOG_INFO, "Unknown interface %s deleted", (char *)tb[IFLA_IFNAME]);
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -72,7 +72,6 @@
+ /* Forward declarations */
+ static int print_vrrp_data(thread_t * thread);
+ static int print_vrrp_stats(thread_t * thread);
+-static int reload_vrrp_thread(thread_t * thread);
+ 
+ static char *vrrp_syslog_ident;
+ 
+@@ -405,7 +404,7 @@
+ }
+ 
+ /* Reload thread */
+-static int
++int
+ reload_vrrp_thread(__attribute__((unused)) thread_t * thread)
+ {
+ 	/* set the reloading flag */
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -552,7 +552,10 @@
+ static void
+ dbus_create_object(vrrp_t *vrrp)
+ {
+-	dbus_create_object_params(vrrp->iname, IF_NAME(IF_BASE_IFP(vrrp->ifp)), vrrp->vrid, vrrp->family, false);
++#ifdef _DEFER_INTF_
++	if (vrrp->ifp && vrrp->ifp->deferred != 0)
++#endif
++		dbus_create_object_params(vrrp->iname, IF_NAME(IF_BASE_IFP(vrrp->ifp)), vrrp->vrid, vrrp->family, false);
+ }
+ 
+ /* first function to be run when trying to own bus,
+@@ -927,52 +930,16 @@
+ void
+ dbus_reload(list o, list n)
+ {
+-	element e1, e2, e3;
+-	vrrp_t *vrrp_n, *vrrp_o, *vrrp_n3;
++	element e;
+ 
+ 	if (!LIST_ISEMPTY(n)) {
+-		for (e1 = LIST_HEAD(n); e1; ELEMENT_NEXT(e1)) {
+-			char *n_name;
+-			bool match_found;
+-
+-			vrrp_n = ELEMENT_DATA(e1);
+-
+-			if (LIST_ISEMPTY(o)) {
+-				dbus_create_object(vrrp_n);
+-				continue;
+-			}
+-
+-			n_name = IF_BASE_IFP(vrrp_n->ifp)->ifname;
+-
+-			/* Try an find an instance with same vrid/family/interface that existed before and now */
+-			for (e2 = LIST_HEAD(o), match_found = false; e2 && !match_found; ELEMENT_NEXT(e2)) {
+-				vrrp_o = ELEMENT_DATA(e2);
+-
+-				if (vrrp_n->vrid == vrrp_o->vrid &&
+-				    vrrp_n->family == vrrp_o->family &&
+-				    !strcmp(n_name, IF_BASE_IFP(vrrp_o->ifp)->ifname)) {
+-					/* If the old instance exists in the new config,
+-					 * then the dbus object will exist */
+-					if (!strcmp(vrrp_n->iname, vrrp_o->iname)) {
+-						match_found = true;
+-						break;
+-					}
+-
+-					/* Check if the old instance name we found still exists
+-					 * (but has a different vrid/family/interface) */
+-					for (e3 = LIST_HEAD(n); e3; ELEMENT_NEXT(e3)) {
+-						vrrp_n3 = ELEMENT_DATA(e3);
+-						if (!strcmp(vrrp_o->iname, vrrp_n3->iname)) {
+-							match_found = true;
+-							break;
+-						}
+-					}
+-				}
+-			}
+-
+-			if (match_found)
+-				continue;
+-
++		for (e = LIST_HEAD(n); e; ELEMENT_NEXT(e)) {
++			vrrp_t *vrrp_n = ELEMENT_DATA(e);
++			/* 
++			 * dbus_create_object_parms checks if the object exists in a
++			 * hashmap so removed code checking if an dbus_object exists
++			 * for this vrrp group, seems redundant.
++			 */
+ 			dbus_create_object(vrrp_n);
+ 		}
+ 	}
+--- a/keepalived/include/vrrp_daemon.h
++++ b/keepalived/include/vrrp_daemon.h
+@@ -27,11 +27,17 @@
+ #include <stdlib.h>
+ #include <signal.h>
+ 
++#ifdef _DEFER_INTF_
++/* Local include */
++#include "scheduler.h"
++#endif
++
+ /* Daemon define */
+ #define PROG_VRRP	"Keepalived_vrrp"
+ #define WDOG_VRRP	"/tmp/.vrrp"
+ 
+ /* Prototypes */
+ extern int start_vrrp_child(void);
++extern int reload_vrrp_thread(thread_t *);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -566,6 +566,10 @@
+ 
+ 	for (e = LIST_HEAD(p); e; ELEMENT_NEXT(e)) {
+ 		vrrp = ELEMENT_DATA(e);
++#ifdef _DEFER_INTF_
++		if (vrrp->ifp && vrrp->ifp->deferred == 0)
++			continue;
++#endif
+ 		ifindex =
+ #ifdef _HAVE_VRRP_VMAC_
+ 			  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
+@@ -636,6 +640,10 @@
+ 		sock = ELEMENT_DATA(e_sock);
+ 		for (e_vrrp = LIST_HEAD(p); e_vrrp; ELEMENT_NEXT(e_vrrp)) {
+ 			vrrp = ELEMENT_DATA(e_vrrp);
++#ifdef _DEFER_INTF_
++			if (vrrp->ifp && vrrp->ifp->deferred == 0)
++				continue;
++#endif
+ 			ifindex =
+ #ifdef _HAVE_VRRP_VMAC_
+ 				  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
