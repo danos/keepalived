@@ -1,0 +1,201 @@
+From 04f2d32871bb3b11d7dc024039952f2fe2750306 Mon Sep 17 00:00:00 2001
+From: Quentin Armitage <quentin@armitage.org.uk>
+Date: Wed, 31 Oct 2018 23:54:13 +0000
+Subject: [PATCH] When opening files for write, ensure they aren't symbolic
+ links
+
+Issue #1048 identified that if, for example, a non privileged user
+created a symbolic link from /etc/keepalvied.data to /etc/passwd,
+writing to /etc/keepalived.data (which could be invoked via DBus)
+would cause /etc/passwd to be overwritten.
+
+This commit stops keepalived writing to pathnames where the ultimate
+component is a symbolic link, by setting O_NOFOLLOW whenever opening
+a file for writing.
+
+This might break some setups, where, for example, /etc/keepalived.data
+was a symbolic link to /home/fred/keepalived.data. If this was the case,
+instead create a symbolic link from /home/fred/keepalived.data to
+/tmp/keepalived.data, so that the file is still accessible via
+/home/fred/keepalived.data.
+
+There doesn't appear to be a way around this backward incompatibility,
+since even checking if the pathname is a symbolic link prior to opening
+for writing would create a race condition.
+
+Signed-off-by: Quentin Armitage <quentin@armitage.org.uk>
+---
+ keepalived/core/pidfile.c    |    2 +-
+ keepalived/vrrp/vrrp_dbus.c  |    2 +-
+ keepalived/vrrp/vrrp_print.c |    9 +++++----
+ lib/memory.c                 |    2 +-
+ lib/parser.c                 |    4 ++--
+ lib/utils.c                  |   43 ++++++++++++++++++++++++++++++++++++++++++-
+ lib/utils.h                  |    1 +
+ 7 files changed, 53 insertions(+), 10 deletions(-)
+
+--- a/keepalived/core/pidfile.c
++++ b/keepalived/core/pidfile.c
+@@ -54,7 +54,7 @@
+ pidfile_write(const char *pid_file, int pid)
+ {
+ 	FILE *pidfile = NULL;
+-	int pidfd = creat(pid_file, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
++	int pidfd = open(pid_file, O_NOFOLLOW | O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+ 	if (pidfd != -1) pidfile = fdopen(pidfd, "w");
+ 
+ 	if (!pidfile) {
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -628,7 +628,7 @@
+ 	size_t length;
+ 	gchar *ret = NULL;
+ 
+-	f = fopen(filepath, "rb");
++	f = fopen(filepath, "r");
+ 	if (f) {
+ 		fseek(f, 0, SEEK_END);
+ 		length = (size_t)ftell(f);
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -27,6 +27,7 @@
+ #include "vrrp.h"
+ #include "vrrp_data.h"
+ #include "vrrp_print.h"
++#include "utils.h"
+ #include "vrrp_track.h"
+ #ifdef _HAVE_FIB_ROUTING_
+ #include "vrrp_iproute.h"
+@@ -438,7 +439,7 @@
+ vrrp_print_data(void)
+ {
+ 	FILE *file;
+-	file = fopen ("/tmp/keepalived.data","w");
++	file = fopen_safe ("/tmp/keepalived.data","w");
+ 
+ 	if (!file) {
+ 		log_message(LOG_INFO, "Can't open /tmp/keepalived.data (%d: %s)",
+@@ -462,7 +463,7 @@
+ vrrp_print_stats(void)
+ {
+ 	FILE *file;
+-	file = fopen ("/tmp/keepalived.stats","w");
++	file = fopen_safe ("/tmp/keepalived.stats","w");
+ 
+ 	if (!file) {
+ 		log_message(LOG_INFO, "Can't open /tmp/keepalived.stats (%d: %s)",
+@@ -470,6 +471,7 @@
+ 		return;
+ 	}
+ 
++
+ 	list l = vrrp_data->vrrp;
+ 	element e;
+ 	vrrp_t *vrrp;
+@@ -481,8 +483,7 @@
+ 		fprintf(file, "    Received: %" PRIu64 "\n", vrrp->stats->advert_rcvd);
+ 		fprintf(file, "    Sent: %d\n", vrrp->stats->advert_sent);
+ 		fprintf(file, "  Became master: %d\n", vrrp->stats->become_master);
+-		fprintf(file, "  Released master: %d\n",
+-			vrrp->stats->release_master);
++		fprintf(file, "  Released master: %d\n", vrrp->stats->release_master);
+ 		fprintf(file, "  Packet Errors:\n");
+ 		fprintf(file, "    Length: %" PRIu64 "\n", vrrp->stats->packet_len_err);
+ 		fprintf(file, "    TTL: %" PRIu64 "\n", vrrp->stats->ip_ttl_err);
+--- a/lib/memory.c
++++ b/lib/memory.c
+@@ -435,7 +435,7 @@
+ 	}
+ 
+ 	snprintf(log_name, log_name_len, "/tmp/%s_mem.%d.log", prog_name, getpid());
+-	log_op = fopen(log_name, "a");
++	log_op = fopen_safe(log_name, "a");
+ 	if (log_op == NULL) {
+ 		log_message(LOG_INFO, "Unable to open %s for appending", log_name);
+ 		log_op = stderr;
+--- a/lib/parser.c
++++ b/lib/parser.c
+@@ -141,12 +141,12 @@
+ {
+ 	unsigned int i;
+ 	keyword_t *keyword_vec;
+-	char file_name[21];
++	char file_name[22];
+ 
+ 	if (!level) {
+ 		sprintf(file_name, "/tmp/keywords.%d", getpid());
+ 		snprintf(file_name, sizeof(file_name), "/tmp/keywords.%d", getpid());
+-		fp = fopen(file_name, "w");
++		fp = fopen_safe(file_name, "w");
+ 		if (!fp)
+ 			return;
+ 	}
+--- a/lib/utils.c
++++ b/lib/utils.c
+@@ -90,7 +90,7 @@
+ void
+ write_stacktrace(const char *file_name)
+ {
+-	int fd = open(file_name, O_WRONLY | O_APPEND | O_CREAT, 0644);
++	int fd = open(file_name, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+ 	void *buffer[100];
+ 	int nptrs;
+ 
+@@ -529,6 +529,47 @@
+ 	return (*str1 == 0 && *str2 == 0);
+ }
+ 
++/* We need to use O_NOFOLLOW if opening a file for write, so that a non privileged user can't
++ * create a symbolic link from the path to a system file and cause a system file to be overwritten. */
++FILE *fopen_safe(const char *path, const char *mode)
++{
++	int fd;
++	FILE *file;
++	int flags = O_NOFOLLOW | O_CREAT;
++
++	if (mode[0] == 'r')
++		return fopen(path, mode);
++
++	if (mode[0] != 'a' && mode[0] != 'w')
++		return NULL;
++
++	if (mode[1] &&
++	    (mode[1] != '+' || mode[2]))
++		return NULL;
++
++	if (mode[0] == 'w')
++		flags |= O_TRUNC;
++	else
++		flags |= O_APPEND;
++
++	if (mode[1])
++		flags |= O_RDWR;
++	else
++		flags |= O_WRONLY;
++
++	fd = open(path, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
++	if (fd == -1)
++		return NULL;
++
++	file = fdopen (fd, "w");
++	if (!file) {
++		close(fd);
++		return NULL;
++	}
++
++	return file;
++}
++
+ void
+ set_std_fd(int force)
+ {
+--- a/lib/utils.h
++++ b/lib/utils.h
+@@ -70,6 +70,7 @@
+ extern int inet_sockaddrcmp(struct sockaddr_storage *, struct sockaddr_storage *);
+ extern char *get_local_name(void);
+ extern int string_equal(const char *, const char *);
++extern FILE *fopen_safe(const char *, const char *);
+ extern void set_std_fd(int);
+ extern int32_t get_prefix_for_ip_address(char *, int);
+ extern int32_t get_prefix_from_netmask(struct sockaddr *);

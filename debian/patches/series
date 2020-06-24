@@ -55,3 +55,6 @@ ensure_router_id_is_populated.patch
 add_effective_and_configure_prefix.patch
 reset_groups_to_backup_on_configured_priority_change.patch
 add_transition_to_master_timer_expired.patch
+
+## CVE fix from upstream
+security_fix_tmp_files.patch
