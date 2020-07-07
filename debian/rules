@@ -9,7 +9,7 @@ override_dh_auto_configure:
 	autoheader
 	automake --add-missing
 	autoreconf
-	dh_auto_configure -- --prefix=/usr --with-kernel-dir=$(CURDIR)/debian --with-systemdsystemunitdir=/etc/systemd/system/multi-user.target.wants --enable-snmp-keepalived --enable-snmp-rfc --disable-lvs --enable-sha1 --enable-dbus --enable-deferred-intf
+	dh_auto_configure -- --prefix=/usr --with-kernel-dir=$(CURDIR)/debian --with-systemdsystemunitdir=/etc/systemd/system/multi-user.target.wants --enable-snmp-keepalived --enable-snmp-rfc --disable-lvs --enable-sha1 --enable-dbus --enable-deferred-intf --disable-snmp-reply-v3-for-v2
 
 override_dh_strip:
 	dh_strip --dbg-package=keepalived-dbg
