@@ -1,3 +1,9 @@
+keepalived (1.2.24-git66c870aa+vyatta31.1) unstable; urgency=medium
+
+  * Apply upstream CVE fix
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Fri, 10 Jul 2020 12:29:31 +0100
+
 keepalived (1.2.24-git66c870aa+vyatta31) unstable; urgency=medium
 
   * Bugfix/Reset prefix when deleting IP addresses
