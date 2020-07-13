@@ -4,12 +4,13 @@
  keepalived.spec.in               |    1 
  keepalived/include/vrrp_daemon.h |    6 ++++
  keepalived/include/vrrp_if.h     |    9 ++++++
+ keepalived/vrrp/vrrp.c           |    7 ++++
  keepalived/vrrp/vrrp_daemon.c    |    3 --
  keepalived/vrrp/vrrp_dbus.c      |   57 ++++++++-------------------------------
  keepalived/vrrp/vrrp_netlink.c   |   18 ++++++++++++
  keepalived/vrrp/vrrp_parser.c    |   23 ++++++++++++++-
  keepalived/vrrp/vrrp_scheduler.c |    8 +++++
- 10 files changed, 116 insertions(+), 49 deletions(-)
+ 11 files changed, 122 insertions(+), 50 deletions(-)
 
 --- a/keepalived/vrrp/vrrp_parser.c
 +++ b/keepalived/vrrp/vrrp_parser.c
@@ -381,3 +382,19 @@
  			ifindex =
  #ifdef _HAVE_VRRP_VMAC_
  				  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2747,7 +2747,12 @@
+ #endif
+ 						ifindex_o = vrrp_o->ifp->ifindex;
+ 
+-					if (ifindex == ifindex_o)
++					if (
++						ifindex == ifindex_o
++#ifdef _DEFER_INTF_
++						&& (vrrp_o->ifp->deferred >= INTF_PRESENT || vrrp->ifp->deferred >= INTF_PRESENT )
++#endif
++						)
+ 					{
+ 						log_message(LOG_INFO, "VRID %d is duplicated on interface %s", vrrp->vrid, if_get_by_ifindex(ifindex)->ifname);
+ 						return false;

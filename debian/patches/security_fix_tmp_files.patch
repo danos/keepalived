@@ -47,7 +47,7 @@ Signed-off-by: Quentin Armitage <quentin@armitage.org.uk>
  	if (!pidfile) {
 --- a/keepalived/vrrp/vrrp_dbus.c
 +++ b/keepalived/vrrp/vrrp_dbus.c
-@@ -628,7 +628,7 @@
+@@ -631,7 +631,7 @@
  	size_t length;
  	gchar *ret = NULL;
  
