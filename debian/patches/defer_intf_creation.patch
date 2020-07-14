@@ -8,9 +8,9 @@
  keepalived/vrrp/vrrp_daemon.c    |    3 --
  keepalived/vrrp/vrrp_dbus.c      |   57 ++++++++-------------------------------
  keepalived/vrrp/vrrp_netlink.c   |   18 ++++++++++++
- keepalived/vrrp/vrrp_parser.c    |   23 ++++++++++++++-
- keepalived/vrrp/vrrp_scheduler.c |    8 +++++
- 11 files changed, 122 insertions(+), 50 deletions(-)
+ keepalived/vrrp/vrrp_parser.c    |   21 +++++++++++++-
+ keepalived/vrrp/vrrp_scheduler.c |   13 ++++++++
+ 11 files changed, 125 insertions(+), 50 deletions(-)
 
 --- a/keepalived/vrrp/vrrp_parser.c
 +++ b/keepalived/vrrp/vrrp_parser.c
@@ -29,7 +29,7 @@
  
  		/* Check if the interface exists and is a macvlan we can use */
  		if ((ifp = if_get_by_ifname(vrrp->vmac_ifname)) &&
-@@ -264,12 +270,25 @@
+@@ -264,12 +270,23 @@
  
  	vrrp->ifp = if_get_by_ifname(name);
  	if (!vrrp->ifp) {
@@ -42,8 +42,6 @@
 +		ifp->deferred = INTF_NOTPRESENT;
 +		if_add_queue(ifp);
 +		vrrp->ifp = if_get_by_ifname(name);
-+	} else {
-+		vrrp->ifp->deferred = INTF_PRESENT;
 +#else
  		log_message(LOG_INFO, "Cant find interface %s for vrrp_instance %s !!!"
  				    , name, vrrp->iname);
@@ -382,6 +380,18 @@
  			ifindex =
  #ifdef _HAVE_VRRP_VMAC_
  				  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
+@@ -1096,6 +1104,11 @@
+ 	vrid = vrrp_timer_vrid_timeout(fd);
+ 	vrrp = vrrp_index_lookup(vrid, fd);
+ 
++#ifdef _DEFER_INTF_
++	if (!vrrp)
++		return fd;
++#endif
++
+ 	/* Run the FSM handler */
+ 	prev_state = vrrp->state;
+ 	VRRP_FSM_READ_TO(vrrp);
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
 @@ -2747,7 +2747,12 @@
