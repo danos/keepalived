@@ -1,3 +1,17 @@
+keepalived (1.2.24-git66c870aa+vyatta33) unstable; urgency=medium
+
+  * Bugfix/Don't add debug flag on remove call
+  * Bugfix/set state to BACKUP when cfg prio changes
+  * Add log for instance in SG not going to master
+  * Add master down timer log reason
+  * Apply upstream CVE fix
+  * Bugfix/Stop crash when intf not yet present
+  * Bugfix/Don't send VRRPv3 SNMP traps for VRRPv2
+  * Allow multiple VRID on an intf when deferring intf
+  * Bugfix/Allow multiple groups on a deferred intf
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Mon, 03 Aug 2020 09:31:34 +0100
+
 keepalived (1.2.24-git66c870aa+vyatta32) unstable; urgency=medium
 
   * Add DBus method to retrieve recv intf
