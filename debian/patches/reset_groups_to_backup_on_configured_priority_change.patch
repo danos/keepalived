@@ -8,7 +8,7 @@
  	vrrp->state = old_vrrp->state;
  	vrrp->init_state = old_vrrp->state;
  	vrrp->wantstate = old_vrrp->state;
-+	if (old_vrrp->base_priority != vrrp->base_priority) {
++	if (old_vrrp->base_priority != vrrp->base_priority && !vrrp->nopreempt) {
 +		vrrp->state = vrrp->init_state = vrrp->wantstate = VRRP_STATE_BACK;
 +	}
 +
