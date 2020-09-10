@@ -1,27 +1,28 @@
 #!/usr/bin/make -f
+export DH_VERBOSE=1
+export DH_OPTIONS=-v
 
 
 %:
-	dh $@ --with autoreconf --with systemd
+	dh $@ --with autoreconf
 
 override_dh_auto_configure:
-	aclocal
+	mkdir -p build-aux
+	aclocal --install
 	autoheader
 	automake --add-missing
 	autoreconf
-	dh_auto_configure -- --prefix=/usr --with-kernel-dir=$(CURDIR)/debian --with-systemdsystemunitdir=/etc/systemd/system/multi-user.target.wants --enable-snmp-keepalived --enable-snmp-rfc --disable-lvs --enable-sha1 --enable-dbus --enable-deferred-intf --disable-snmp-reply-v3-for-v2
+	dh_auto_configure -- --with-kernel-dir=$(CURDIR)/debian --with-systemdsystemunitdir=/lib/systemd/system/multi-user.target.wants --enable-snmp-keepalived --enable-snmp-rfc --disable-lvs --enable-sha1 --enable-dbus --disable-snmp-reply-v3-for-v2 --enable-json --enable-bfd
+	#--enable-deferred-intf --disable-snmp-reply-v3-for-v2
 
 override_dh_strip:
-	dh_strip --dbg-package=keepalived-dbg
+	dh_strip --dbgsym-migration='keepalived-dbg (<<1.2.24-git66c870aa+vyatta34)'
 
 override_dh_installinit:
 	dh_installinit -pkeepalived --no-start --noscripts
 
-override_dh_systemd_enable:
-	dh_systemd_enable -pkeepalived --no-enable
-
-override_dh_systemd_start:
-	dh_systemd_start -pkeepalived --no-start
+override_dh_installsystemd:
+	dh_installsystemd -pkeepalived --no-start --no-enable keepalived.service
 
 override_dh_auto_install:
 	dh_auto_install

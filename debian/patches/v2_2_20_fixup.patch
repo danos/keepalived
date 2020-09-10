@@ -1,0 +1,35 @@
+---
+ keepalived/dbus/org.keepalived.Vrrp1.conf |   10 ++++++----
+ keepalived/keepalived.service.in          |    2 +-
+ 2 files changed, 7 insertions(+), 5 deletions(-)
+
+--- a/keepalived/dbus/org.keepalived.Vrrp1.conf
++++ b/keepalived/dbus/org.keepalived.Vrrp1.conf
+@@ -4,11 +4,13 @@
+ <busconfig>
+ 	<policy user="root">
+ 		<allow own="org.keepalived.Vrrp1"/>
+-		<allow send_destination="org.keepalived.Vrrp1"/>
++		<allow send_type="method_call" send_destination="org.keepalived.Vrrp1"/>
++		<allow send_type="method_return" send_destination="org.keepalived.Vrrp1"/>
++		<allow send_type="signal" send_destination="org.keepalived.Vrrp1"/>
+ 	</policy>
+ 	<policy context="default">
+-		<allow send_interface="org.freedesktop.DBus.Introspectable" />
+-		<allow send_interface="org.freedesktop.DBus.Peer" />
+-		<allow send_interface="org.freedesktop.DBus.Properties" />
++		<allow send_destination="org.keepalived.Vrrp1" send_interface="org.freedesktop.DBus.Introspectable" />
++		<allow send_destination="org.keepalived.Vrrp1" send_interface="org.freedesktop.DBus.Peer" />
++		<allow send_destination="org.keepalived.Vrrp1" send_interface="org.freedesktop.DBus.Properties" />
+ 	</policy>
+ </busconfig>
+--- a/keepalived/keepalived.service.in
++++ b/keepalived/keepalived.service.in
+@@ -1,6 +1,6 @@
+ [Unit]
+ Description=LVS and VRRP High Availability Monitor
+-After=network-online.target syslog.target @SNMP_SERVICE@
++After=network-online.target @SNMP_SERVICE@
+ Wants=network-online.target @SNMP_SERVICE@
+ 
+ [Service]
