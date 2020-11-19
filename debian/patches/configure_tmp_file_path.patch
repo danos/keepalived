@@ -43,7 +43,7 @@ Signed-off-by:Anthony Dempsey, anthonyjdempsey@gmail.com
  #ifdef _WITH_VRRP_
  static void
  set_default_mcast_group(data_t * data)
-@@ -225,6 +236,19 @@
+@@ -227,6 +238,19 @@
  	}
  
  	FREE_PTR(local_name);
@@ -63,7 +63,7 @@ Signed-off-by:Anthony Dempsey, anthonyjdempsey@gmail.com
  }
  
  void
-@@ -240,6 +264,16 @@
+@@ -242,6 +266,16 @@
  	FREE_PTR(data->router_id);
  	FREE_PTR(data->email_from);
  	FREE_PTR(data->smtp_helo_name);
@@ -80,7 +80,7 @@ Signed-off-by:Anthony Dempsey, anthonyjdempsey@gmail.com
  #ifdef _WITH_SNMP_
  	FREE_PTR(data->snmp_socket);
  #endif
-@@ -279,6 +313,8 @@
+@@ -281,6 +315,8 @@
  				    , data->email_from);
  		dump_list(data->email);
  	}

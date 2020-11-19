@@ -66,7 +66,7 @@
  vrrp_timer_fd(const int fd)
  {
  	timeval_t timer;
-@@ -1091,7 +1089,7 @@
+@@ -1089,7 +1087,7 @@
  }
  
  /* Our read packet dispatcher */

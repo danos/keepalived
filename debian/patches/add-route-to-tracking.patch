@@ -813,7 +813,7 @@
  			} else {
  				/* Register new priority update thread */
  				thread_add_timer(master, vrrp_update_priority,
-@@ -937,6 +967,10 @@
+@@ -935,6 +965,10 @@
  	if (!LIST_ISEMPTY(vrrp->track_pathmon))
  		prio_offset += vrrp_pathmon_weight(vrrp->track_pathmon);
  

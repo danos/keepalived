@@ -18,12 +18,12 @@
  extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
  extern int netlink_interface_lookup(void);
 +extern int netlink_refresh_state(thread_t *);
+ extern int netlink_address_lookup(void);
  extern void kernel_netlink_poll(void);
  extern void kernel_netlink_init(void);
- extern void kernel_netlink_close(void);
 --- a/keepalived/vrrp/vrrp_netlink.c
 +++ b/keepalived/vrrp/vrrp_netlink.c
-@@ -590,9 +590,15 @@
+@@ -592,9 +592,15 @@
  				continue;
  			if (errno == EWOULDBLOCK || errno == EAGAIN)
  				break;
@@ -41,7 +41,7 @@
  				log_message(LOG_INFO, "Netlink: recvmsg error - %d (%m)", errno);
  			continue;
  		}
-@@ -971,6 +977,17 @@
+@@ -973,6 +979,17 @@
  	return status;
  }
  

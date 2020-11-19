@@ -1,17 +1,15 @@
 ---
- keepalived/core/global_data.c                     |    9 ++++-
+ keepalived/core/global_data.c                     |    1 
  keepalived/dbus/org.keepalived.Vrrp1.Instance.xml |    7 ++++
  keepalived/include/vrrp.h                         |    2 -
- keepalived/include/vrrp_netlink.h                 |    1 
  keepalived/include/vrrp_scheduler.h               |    2 -
  keepalived/include/vrrp_sync.h                    |    3 +
  keepalived/vrrp/vrrp.c                            |   12 ++++--
- keepalived/vrrp/vrrp_daemon.c                     |    5 ++
  keepalived/vrrp/vrrp_dbus.c                       |   38 ++++++++++++++++++++++
- keepalived/vrrp/vrrp_netlink.c                    |   11 ++----
+ keepalived/vrrp/vrrp_netlink.c                    |    3 -
  keepalived/vrrp/vrrp_scheduler.c                  |   28 +++++++++++++---
  keepalived/vrrp/vrrp_sync.c                       |   12 +++---
- 12 files changed, 103 insertions(+), 27 deletions(-)
+ 10 files changed, 86 insertions(+), 22 deletions(-)
 
 --- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
 +++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
@@ -57,7 +55,7 @@
  #endif
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1540,7 +1540,7 @@
+@@ -1566,7 +1566,7 @@
  }
  
  void
@@ -66,7 +64,7 @@
  {
  	if (VRRP_VIP_ISSET(vrrp)) {
  #ifdef _WITH_LVS_
-@@ -1553,8 +1553,9 @@
+@@ -1579,8 +1579,9 @@
  	/* set the new vrrp state */
  	switch (vrrp->wantstate) {
  	case VRRP_STATE_BACK:
@@ -78,7 +76,7 @@
  		vrrp->state = vrrp->wantstate;
  		notify_instance_exec(vrrp, VRRP_STATE_BACK);
  		vrrp->preempt_time.tv_sec = 0;
-@@ -1563,8 +1564,9 @@
+@@ -1589,8 +1590,9 @@
  #endif
  		break;
  	case VRRP_STATE_GOTO_FAULT:
@@ -183,7 +181,7 @@
  vrrp_smtp_notifier(vrrp_t * vrrp)
  {
  	if (vrrp->smtp_alert) {
-@@ -752,14 +752,14 @@
+@@ -750,14 +750,14 @@
  	if (!VRRP_ISUP(vrrp)) {
  		vrrp_log_int_down(vrrp);
  		vrrp->wantstate = VRRP_STATE_GOTO_FAULT;
@@ -200,7 +198,7 @@
          vrrp_smtp_notifier(vrrp);
      } else if (ret == VRRP_PACKET_DROP) {
          log_message(LOG_INFO, "VRRP_Instance(%s), ignoring rcvd packet",
-@@ -787,7 +787,7 @@
+@@ -785,7 +785,7 @@
  	log_message(LOG_INFO, "VRRP_Instance(%s) in FAULT state jump to AH sync",
  	       vrrp->iname);
  	vrrp->wantstate = VRRP_STATE_BACK;
@@ -209,7 +207,7 @@
  }
  #endif
  
-@@ -971,7 +971,7 @@
+@@ -969,7 +969,7 @@
  		vrrp->ms_down_timer = 3 * vrrp->adver_int + VRRP_TIMER_SKEW(vrrp);
  
  		/* handle backup state transition */
@@ -218,7 +216,7 @@
  
  		if (vrrp->state == VRRP_STATE_BACK)
  			log_message(LOG_INFO, "VRRP_Instance(%s) Now in BACKUP state",
-@@ -1203,6 +1203,24 @@
+@@ -1201,6 +1201,24 @@
  
      /* If no instance found => ignore the advert */
  	if (!vrrp) {
@@ -303,68 +301,17 @@
  #endif
 --- a/keepalived/core/global_data.c
 +++ b/keepalived/core/global_data.c
-@@ -177,8 +177,12 @@
- #endif
- #endif
- 	new->local_addresses = NULL;
--	getifaddrs(&(new->local_addresses));
--
-+	if (getifaddrs(&(new->local_addresses)) == -1) {
-+		log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
-+		free_list(&new->email);
-+		FREE(new);
-+		return NULL;
-+	}
- 	return new;
- }
- 
-@@ -239,6 +243,7 @@
- 		FREE_PTR(network_namespace);
- #endif
+@@ -114,6 +114,7 @@
+ free_email(void *data)
+ {
  	FREE(data);
 +	data = NULL;
  }
- 
- void
---- a/keepalived/vrrp/vrrp_daemon.c
-+++ b/keepalived/vrrp/vrrp_daemon.c
-@@ -171,6 +171,11 @@
- 	ndisc_init();
- 
- 	global_data = alloc_global_data();
-+	if (global_data == NULL){
-+		stop_vrrp(KEEPALIVED_EXIT_FATAL);
-+		return;
-+	}
-+	netlink_address_lookup();
- 
- #ifdef _HAVE_LIBIPTC_
- 	iptables_init();
+ static void
+ dump_email(void *data)
 --- a/keepalived/vrrp/vrrp_netlink.c
 +++ b/keepalived/vrrp/vrrp_netlink.c
-@@ -551,7 +551,9 @@
- 			freeifaddrs(global_data->local_addresses);
- 			global_data->local_addresses = NULL;
- 		}
--		getifaddrs(&(global_data->local_addresses));
-+		if (getifaddrs(&(global_data->local_addresses)) == -1) {
-+			log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
-+		}
- 	}
- 	return 0;
- }
-@@ -948,8 +950,8 @@
- 	return status;
- }
- 
--/* Adresses lookup bootstrap function */
--static int
-+/* Address lookup bootstrap function */
-+int
- netlink_address_lookup(void)
- {
- 	nl_handle_t nlh;
-@@ -1104,9 +1106,6 @@
+@@ -1106,9 +1106,6 @@
  void
  kernel_netlink_init(void)
  {
@@ -374,13 +321,3 @@
  	/*
  	 * Prepare netlink kernel broadcast channel
  	 * subscribtion. We subscribe to LINK and ADDR
---- a/keepalived/include/vrrp_netlink.h
-+++ b/keepalived/include/vrrp_netlink.h
-@@ -84,6 +84,7 @@
- extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
- extern int netlink_interface_lookup(void);
- extern int netlink_refresh_state(thread_t *);
-+extern int netlink_address_lookup(void);
- extern void kernel_netlink_poll(void);
- extern void kernel_netlink_init(void);
- extern void kernel_netlink_close(void);

@@ -390,7 +390,7 @@
 -
 +		for (e = LIST_HEAD(n); e; ELEMENT_NEXT(e)) {
 +			vrrp_t *vrrp_n = ELEMENT_DATA(e);
-+			/* 
++			/*
 +			 * dbus_create_object_parms checks if the object exists in a
 +			 * hashmap so removed code checking if an dbus_object exists
 +			 * for this vrrp group, seems redundant.
@@ -431,7 +431,7 @@
  		ifindex =
  #ifdef _HAVE_VRRP_VMAC_
  			  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
-@@ -636,6 +640,10 @@
+@@ -634,6 +638,10 @@
  		sock = ELEMENT_DATA(e_sock);
  		for (e_vrrp = LIST_HEAD(p); e_vrrp; ELEMENT_NEXT(e_vrrp)) {
  			vrrp = ELEMENT_DATA(e_vrrp);
@@ -442,7 +442,7 @@
  			ifindex =
  #ifdef _HAVE_VRRP_VMAC_
  				  (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
-@@ -1096,6 +1104,11 @@
+@@ -1094,6 +1102,11 @@
  	vrid = vrrp_timer_vrid_timeout(fd);
  	vrrp = vrrp_index_lookup(vrid, fd);
  

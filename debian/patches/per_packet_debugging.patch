@@ -49,7 +49,7 @@
  #include "ipvswrapper.h"
  #include "memory.h"
  #include "notify.h"
-@@ -1229,7 +1230,8 @@
+@@ -1227,7 +1228,8 @@
  			if ((auxdata->tp_status & TP_STATUS_VLAN_TPID_VALID) != 0) {
  				// Packets that have VLAN tags are not destined for us, the control plane strips them before
  				// sending them to keepalived. Ignore any that we see
@@ -59,7 +59,7 @@
  				return sock->fd_in;
  			}
  		}
-@@ -1237,24 +1239,26 @@
+@@ -1235,24 +1237,26 @@
  
      /* If no instance found => ignore the advert */
  	if (!vrrp) {
@@ -102,7 +102,7 @@
  		return sock->fd_in;
      }
  
-@@ -1273,7 +1277,8 @@
+@@ -1271,7 +1275,8 @@
  		 */
  		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
  			/* DROP our own packets */
@@ -112,7 +112,7 @@
  			return sock->fd_in;
  		}
  
-@@ -1299,7 +1304,8 @@
+@@ -1297,7 +1302,8 @@
  		 */
  		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
  			/* DROP our own packets */
@@ -122,7 +122,7 @@
  			return sock->fd_in;
  		}
  
-@@ -1310,9 +1316,10 @@
+@@ -1308,9 +1314,10 @@
          ip_str = ipv6_str;
      }
  

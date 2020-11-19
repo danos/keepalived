@@ -1,12 +1,12 @@
 ---
  keepalived/include/vrrp.h      |    4 ++
  keepalived/include/vrrp_data.h |    1 
- keepalived/vrrp/vrrp.c         |   29 ++++++++++++++-
+ keepalived/vrrp/vrrp.c         |   23 +++++++++++
  keepalived/vrrp/vrrp_data.c    |   52 ++++++++++++++++++++++++++
  keepalived/vrrp/vrrp_vmac.c    |    2 -
  lib/utils.c                    |   79 +++++++++++++++++++++++++++++++++++++++++
  lib/utils.h                    |    2 +
- 7 files changed, 167 insertions(+), 2 deletions(-)
+ 7 files changed, 161 insertions(+), 2 deletions(-)
 
 --- a/keepalived/include/vrrp.h
 +++ b/keepalived/include/vrrp.h
@@ -53,20 +53,7 @@
  /* add/remove Virtual IP addresses */
  static void
  vrrp_handle_ipaddress(vrrp_t * vrrp, int cmd, int type)
-@@ -1024,6 +1037,12 @@
- 		dst6.sin6_addr = ((struct sockaddr_in6 *) &global_data->vrrp_mcast_group6)->sin6_addr;
- 		msg.msg_name = &dst6;
- 		msg.msg_namelen = sizeof(dst6);
-+		/*
-+		 * Set the ipv6_scope_id on the source address so that the
-+		 * packet is sent out of the VIF interface with the correct
-+		 * virtual mac address.
-+		 */
-+		inet_ip6scopeid(vrrp->vmac_ifindex, src);
- 		vrrp_build_ancillary_data(&msg, cbuf, src);
- 	}
- 
-@@ -1191,6 +1210,8 @@
+@@ -1191,6 +1204,8 @@
  {
          if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
              netlink_link_up(vrrp);
@@ -75,7 +62,7 @@
          }
  
          interface_t *ifp ;
-@@ -1207,6 +1228,8 @@
+@@ -1207,6 +1222,8 @@
  		vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
  	if (!LIST_ISEMPTY(vrrp->evip))
  		vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
@@ -84,7 +71,7 @@
  	vrrp->vipset = 1;
  
  #ifdef _HAVE_FIB_ROUTING_
-@@ -1323,10 +1346,12 @@
+@@ -1323,10 +1340,12 @@
  	    VRRP_VIP_ISSET(vrrp) ||
  	    __test_bit(DONT_RELEASE_VRRP_BIT, &debug) ||
  	    __test_bit(RELEASE_VIPS_BIT, &debug)) {
@@ -98,12 +85,12 @@
  		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
  		vrrp->vipset = 0;
  	}
-@@ -2610,6 +2635,8 @@
+@@ -2627,6 +2646,8 @@
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
  		if (!LIST_ISEMPTY(vrrp->evip))
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
-+                if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
-+                        vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_ADD);
++		if (!LIST_ISEMPTY(vrrp->ipv6_linklocal))
++			vrrp_handle_ipv6_linklocal(vrrp, IPADDRESS_ADD);
  #ifdef _HAVE_FIB_ROUTING_
  		if (!LIST_ISEMPTY(vrrp->vroutes))
  			vrrp_handle_iproutes(vrrp, IPROUTE_ADD);
