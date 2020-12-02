@@ -7,10 +7,10 @@
  keepalived/vrrp/vrrp.c           |    7 ++++
  keepalived/vrrp/vrrp_daemon.c    |    3 --
  keepalived/vrrp/vrrp_dbus.c      |   57 ++++++++-------------------------------
- keepalived/vrrp/vrrp_netlink.c   |   18 ++++++++++++
+ keepalived/vrrp/vrrp_netlink.c   |   46 +++++++++++++++++++++++++++++++
  keepalived/vrrp/vrrp_parser.c    |   21 +++++++++++++-
  keepalived/vrrp/vrrp_scheduler.c |   13 ++++++++
- 11 files changed, 125 insertions(+), 50 deletions(-)
+ 11 files changed, 153 insertions(+), 50 deletions(-)
 
 --- a/keepalived/vrrp/vrrp_parser.c
 +++ b/keepalived/vrrp/vrrp_parser.c
@@ -203,17 +203,49 @@
  
  /* Global vars */
  nl_handle_t nl_cmd;	/* Command channel */
-@@ -869,6 +872,9 @@
- #else
- 	ifp->flags = ifi->ifi_flags;
+@@ -794,6 +797,9 @@
+ 	struct rtattr* linkattr[IFLA_MACVLAN_MAX+1];
+ 	interface_t *ifp_base;
  #endif
 +#ifdef _DEFER_INTF_
 +	ifp->deferred = INTF_PRESENT;
 +#endif
  
- 	return 1;
- }
-@@ -1166,16 +1172,28 @@
+ 	name = (char *)RTA_DATA(tb[IFLA_IFNAME]);
+ 	/* Fill the interface structure */
+@@ -916,6 +922,9 @@
+ #endif
+ 			ifp->flags = ifi->ifi_flags;
+ 		}
++#ifdef _DEFER_INTF_
++			bool prev_carrier = ifp->carrier_is_up;
++#endif
+ 		if (tb[IFLA_CARRIER]) {
+ 			ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
+ 			log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
+@@ -923,6 +932,11 @@
+ 			log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
+ 			ifp->carrier_is_up = 1;
+ 		}
++#ifdef _DEFER_INTF_
++		if ((!ifp->vmac && prev_carrier != ifp->carrier_is_up && ifp->carrier_is_up)) {
++			thread_add_event(master, reload_vrrp_thread, NULL, 0);
++		}
++#endif
+ 		return 0;
+ 	}
+ 
+@@ -1138,6 +1152,9 @@
+ 	size_t len;
+ 	int status;
+ 	char *name;
++#ifdef _DEFER_INTF_
++	bool prev_carrier;
++#endif
+ 
+ 	ifi = NLMSG_DATA(h);
+ 	if (!(h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK))
+@@ -1166,22 +1183,43 @@
  	ifp = if_get_by_ifindex((ifindex_t)ifi->ifi_index);
  	if (!ifp) {
  		if (h->nlmsg_type == RTM_NEWLINK) {
@@ -224,9 +256,13 @@
  			if (!ifp) {
  				ifp = (interface_t *) MALLOC(sizeof(interface_t));
  				if_add_queue(ifp);
++#ifdef _DEFER_INTF_
++				prev_carrier = false;
++#endif
  			} else {
 +#ifdef _DEFER_INTF_
 +				deferred = ifp->deferred;
++				prev_carrier = ifp->carrier_is_up;
 +#endif
  				memset(ifp, 0, sizeof(interface_t));
  			}
@@ -234,7 +270,7 @@
  			if (status < 0)
  				return -1;
 +#ifdef _DEFER_INTF_
-+			if (deferred == INTF_NOTPRESENT) {
++			if (deferred == INTF_NOTPRESENT || (!ifp->vmac && prev_carrier != ifp->carrier_is_up && ifp->carrier_is_up)) {
 +				thread_add_event(master, reload_vrrp_thread, NULL, 0);
 +				return 0;
 +			}
@@ -242,6 +278,32 @@
  		} else {
  			if (__test_bit(LOG_DETAIL_BIT, &debug))
  				log_message(LOG_INFO, "Unknown interface %s deleted", (char *)tb[IFLA_IFNAME]);
+ 			return 0;
+ 		}
+ 	}
++#ifdef _DEFER_INTF_
++	else {
++		prev_carrier = ifp->carrier_is_up;
++	}
++#endif
+ 
+ 	/*
+ 	 * Update flags.
+@@ -1204,6 +1242,14 @@
+ 		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
+ 		ifp->carrier_is_up = 1;
+ 	}
++#ifdef _DEFER_INTF_
++	if ((!ifp->vmac && prev_carrier != ifp->carrier_is_up && ifp->carrier_is_up)) {
++		log_message(LOG_INFO, "Carrier protocol for %s became active, restarting vrrp", name);
++		thread_add_event(master, reload_vrrp_thread, NULL, 0);
++		return 0;
++	}
++#endif
++
+ 	return 0;
+ }
+ 
 --- a/keepalived/vrrp/vrrp_daemon.c
 +++ b/keepalived/vrrp/vrrp_daemon.c
 @@ -72,7 +72,6 @@
