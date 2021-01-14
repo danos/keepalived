@@ -1,3 +1,9 @@
+keepalived (1.2.24-git66c870aa+vyatta34.1) unstable; urgency=medium
+
+  * Bugfix/Multicast doesn't work when carrier down
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Thu, 14 Jan 2021 17:17:35 +0000
+
 keepalived (1.2.24-git66c870aa+vyatta34) unstable; urgency=medium
 
   * Bugfix/Don't start in BACKUP when nopreempt set
