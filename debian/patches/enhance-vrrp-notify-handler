@@ -1,0 +1,261 @@
+---
+ keepalived/include/vrrp.h        |    2 -
+ keepalived/include/vrrp_data.h   |    1 
+ keepalived/include/vrrp_notify.h |    7 ++++++
+ keepalived/include/vrrp_print.h  |    1 
+ keepalived/vrrp/vrrp_data.c      |   26 +++++++++++++++++++----
+ keepalived/vrrp/vrrp_notify.c    |   43 +++++++++++++++++++++++++++------------
+ keepalived/vrrp/vrrp_parser.c    |    6 +----
+ keepalived/vrrp/vrrp_print.c     |   16 +++++++++++---
+ keepalived/vrrp/vrrp_snmp.c      |    4 +--
+ 9 files changed, 79 insertions(+), 27 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -239,7 +239,6 @@
+ 	char			*script_master;
+ 	char			*script_fault;
+ 	char			*script_stop;
+-	char			*script;
+ 
+ 	/* rfc2338.6.2 */
+ 	uint32_t		ms_down_timer;
+@@ -266,6 +265,7 @@
+ 
+ 	/* IPSEC AH counter def (only valid for VRRPv2) --rfc2402.3.3.2 */
+ 	seq_counter_t		*ipsecah_counter;
++	list			script;
+ } vrrp_t;
+ 
+ /* VRRP state machine -- rfc2338.6.4 */
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -85,6 +85,7 @@
+ extern void alloc_vrrp_track(vector_t *);
+ extern void alloc_vrrp_script(char *);
+ extern void alloc_vrrp_track_script(vector_t *);
++extern void alloc_vrrp_notify_script(vector_t *);
+ extern void alloc_vrrp_vip(vector_t *);
+ extern void alloc_vrrp_evip(vector_t *);
+ extern void alloc_vrrp_ipv6_linklocal(vrrp_t *);
+--- a/keepalived/include/vrrp_notify.h
++++ b/keepalived/include/vrrp_notify.h
+@@ -29,5 +29,12 @@
+ 
+ extern int notify_instance_exec(vrrp_t *, int);
+ extern int notify_group_exec(vrrp_sgroup_t *, int);
++extern void alloc_notify_script(list, vector_t *);
++extern void dump_notify_script(void *);
++
++/* Notify script structure definition */
++typedef struct _notify_sc {
++    char         *sname;
++} notify_sc_t;
+ 
+ #endif
+--- a/keepalived/include/vrrp_print.h
++++ b/keepalived/include/vrrp_print.h
+@@ -25,3 +25,4 @@
+ 
+ extern void vrrp_print_data(void);
+ extern void vrrp_print_stats(void);
++extern void nscript_print(FILE *file, void *d);
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -36,6 +36,7 @@
+ #include "logger.h"
+ #include "bitops.h"
+ #include "parser.h"
++#include "vrrp_notify.h"
+ #ifdef _HAVE_FIB_ROUTING_
+ #include "vrrp_iprule.h"
+ #include "vrrp_iproute.h"
+@@ -214,7 +215,6 @@
+ 	FREE_PTR(vrrp->script_master);
+ 	FREE_PTR(vrrp->script_fault);
+ 	FREE_PTR(vrrp->script_stop);
+-	FREE_PTR(vrrp->script);
+ 	FREE_PTR(vrrp->stats);
+ 	FREE(vrrp->ipsecah_counter);
+ 
+@@ -228,7 +228,12 @@
+ 			FREE(ELEMENT_DATA(e));
+ 	free_list(&vrrp->track_script);
+ 
+-	free_list(&vrrp->unicast_peer);
++	if (!LIST_ISEMPTY(vrrp->script))
++		for (e = LIST_HEAD(vrrp->script); e; ELEMENT_NEXT(e))
++			FREE(ELEMENT_DATA(e));
++	free_list(&vrrp->script);
++
++        free_list(&vrrp->unicast_peer);
+ 	free_list(&vrrp->vip);
+ 	free_list(&vrrp->evip);
+ 	free_list(&vrrp->vroutes);
+@@ -338,8 +343,11 @@
+ 		log_message(LOG_INFO, "   Fault state transition script = %s", vrrp->script_fault);
+ 	if (vrrp->script_stop)
+ 		log_message(LOG_INFO, "   Stop state transition script = %s", vrrp->script_stop);
+-	if (vrrp->script)
+-		log_message(LOG_INFO, "   Generic state transition script = '%s'", vrrp->script);
++    if (!LIST_ISEMPTY(vrrp->script)) {
++        log_message(LOG_INFO, "   Generic state transition scripts = %d\n",
++               LIST_SIZE(vrrp->script));
++        dump_list(vrrp->script);
++    }
+ 	if (vrrp->smtp_alert)
+ 		log_message(LOG_INFO, "   Using smtp notification");
+ #ifdef _HAVE_VRRP_VMAC_
+@@ -485,6 +493,16 @@
+ }
+ 
+ void
++alloc_vrrp_notify_script(vector_t *strvec)
++{
++    vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
++
++    if (LIST_ISEMPTY(vrrp->script))
++        vrrp->script = alloc_list(NULL, dump_notify_script);
++    alloc_notify_script(vrrp->script, strvec);
++}
++
++void
+ alloc_vrrp_vip(vector_t *strvec)
+ {
+ 	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+--- a/keepalived/vrrp/vrrp_notify.c
++++ b/keepalived/vrrp/vrrp_notify.c
+@@ -64,12 +64,6 @@
+ }
+ 
+ static char *
+-get_igscript(vrrp_t *vrrp)
+-{
+-	return vrrp->script;
+-}
+-
+-static char *
+ get_ggscript(vrrp_sgroup_t * vgroup)
+ {
+ 	return vgroup->script;
+@@ -175,21 +169,26 @@
+ notify_instance_exec(vrrp_t * vrrp, int state)
+ {
+ 	char *script = get_iscript(vrrp, state);
+-	char *gscript = get_igscript(vrrp);
+ 	int ret = 0;
++    element e;
++    notify_sc_t *nsc;
+ 
+ 	/* Launch the notify_* script */
+ 	if (script && script_open(script)) {
+ 		notify_exec(script);
+ 		ret = 1;
+ 	}
+-
+ 	/* Launch the generic notify script */
+-	if (gscript && script_open_litteral(gscript)) {
+-		notify_script_exec(gscript, "INSTANCE", state, vrrp->iname,
+-				   vrrp->effective_priority);
+-		ret = 1;
+-	}
++    if (!LIST_ISEMPTY(vrrp->script)) {
++        for (e = LIST_HEAD(vrrp->script); e; ELEMENT_NEXT(e)) {
++            nsc = ELEMENT_DATA(e);
++            if (nsc->sname && script_open_litteral(nsc->sname)) {
++                notify_script_exec(nsc->sname, "INSTANCE", state, vrrp->iname,
++                   vrrp->effective_priority);
++                ret = 1;
++            }
++        }
++    }
+ 
+ #ifdef _WITH_DBUS_
+ 	if (global_data->enable_dbus)
+@@ -220,3 +219,21 @@
+ 
+ 	return ret;
+ }
++
++/* Notify script dump */
++void
++dump_notify_script(void *data)
++{
++    notify_sc_t *nsc = data;
++    log_message(LOG_INFO, "      %s", nsc->sname);
++}
++
++void
++alloc_notify_script(list notify_list, vector_t *strvec)
++{
++    notify_sc_t *nsc = NULL;
++    nsc = (notify_sc_t *) MALLOC(sizeof(notify_sc_t));
++    nsc->sname = (char *)MALLOC(strlen(vector_slot(strvec, 0)) + 1);
++    strncpy(nsc->sname, vector_slot(strvec, 0), strlen(vector_slot(strvec, 0)) + 1);
++    list_add(notify_list, nsc);
++}
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -455,11 +455,9 @@
+ 	vrrp->notify_exec = 1;
+ }
+ static void
+-vrrp_notify_handler(vector_t *strvec)
++vrrp_notify_handler(__attribute__((unused)) vector_t *strvec)
+ {
+-	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+-	vrrp->script = set_value(strvec);
+-	vrrp->notify_exec = 1;
++    alloc_value_block(alloc_vrrp_notify_script);
+ }
+ static void
+ vrrp_smtp_handler(__attribute__((unused)) vector_t *strvec)
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -32,6 +32,7 @@
+ #include "vrrp_iprule.h"
+ #endif
+ #include "vrrp_netlink.h"
++#include "vrrp_notify.h"
+ #include "rttables.h"
+ #include "logger.h"
+ #ifdef _HAVE_VRRP_VMAC_
+@@ -347,9 +348,11 @@
+ 	if (vrrp->script_stop)
+ 		fprintf(file, "   Stop state transition script = %s\n",
+ 		       vrrp->script_stop);
+-	if (vrrp->script)
+-		fprintf(file, "   Generic state transition script = '%s'\n",
+-		       vrrp->script);
++    if (!LIST_ISEMPTY(vrrp->script)) {
++        fprintf(file, "   Generic state transition scripts = %d\n",
++               LIST_SIZE(vrrp->script));
++        vrrp_print_list(file, vrrp->script, &nscript_print);
++    }
+ 	if (vrrp->smtp_alert)
+ 			fprintf(file, "   Using smtp notification\n");
+ }
+@@ -425,3 +428,10 @@
+ 	}
+ 	fclose(file);
+ }
++
++void
++nscript_print(FILE *file, void *data)
++{
++    notify_sc_t *nsc = data;
++    fprintf(file, " VRRP notify Script = %s\n", nsc->sname);
++}
+--- a/keepalived/vrrp/vrrp_snmp.c
++++ b/keepalived/vrrp/vrrp_snmp.c
+@@ -1873,8 +1873,8 @@
+ 		break;
+ 	case VRRP_SNMP_INSTANCE_SCRIPT:
+ 		if (rt->script) {
+-			*var_len = strlen(rt->script);
+-			return (u_char *)rt->script;
++			*var_len = 0;
++			return (u_char *) NULL;
+ 		}
+ 		break;
+ 	case VRRP_SNMP_INSTANCE_ACCEPT:

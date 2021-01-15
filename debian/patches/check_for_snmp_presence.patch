@@ -1,0 +1,166 @@
+---
+ keepalived/core/snmp.c           |   44 ++++++++++++++++++++++++++++++++++++++-
+ keepalived/include/global_data.h |    1 
+ keepalived/include/snmp.h        |    9 +++++++
+ keepalived/include/vrrp_snmp.h   |    1 
+ keepalived/vrrp/vrrp_snmp.c      |   18 ++++++++++++---
+ 5 files changed, 68 insertions(+), 5 deletions(-)
+
+--- a/keepalived/core/snmp.c
++++ b/keepalived/core/snmp.c
+@@ -27,6 +27,9 @@
+ #include "config.h"
+ #include "global_data.h"
+ #include "main.h"
++#include "scheduler.h"
++#include "timer.h"
++#include "vrrp_snmp.h"
+ 
+ #include <net-snmp/agent/agent_sysORTable.h>
+ 
+@@ -271,6 +274,45 @@
+ 	unregister_sysORTable(myoid, len);
+ }
+ 
++/*
++ * Before starting our SNMP agent we should check that the SNMP master Agent is
++ * active. Unfortunately this is quite difficult. Net-snmp doesn't provide a
++ * clear way for an agent to know if SNMPd is running and can be connected to.
++ * This is a best guess attempt to only try and connect once the SNMPd pid file
++ * exists, this should mean it's running. I haven't found a way to check if
++ * we're connected so there may still be problems. This should solve the problem
++ * where keepalived doesn't connect to SNMP after a reboot.
++ */
++int
++snmp_check_for_daemon(thread_t * thread)
++{
++	log_message(LOG_DEBUG, "Checking if SNMPd is running");
++	snmp_args_t * args;
++	args = THREAD_ARG(thread);
++	if (access("/var/run/snmpd.pid", F_OK) != 0) {
++		timeval_t now = timer_now();
++		log_message(LOG_DEBUG, "SNMPd is not running, creating timer thread to "
++					"check in %d seconds.", (1<<args->retries));
++		/* Check for the file presence using an exponential backoff algorithm. */
++		thread_add_timer(thread->master, snmp_check_for_daemon, args,
++			(1<<args->retries)*TIMER_HZ);
++		/* SNMP_RETRY_CEILING defined in include/snmp.h, set to 8 */
++		if (args->retries < SNMP_RETRY_CEILING) {
++			args->retries++;
++		}
++		return -1;
++	}
++	/* Assume SNMPd is running when the pid file exists. */
++	log_message(LOG_DEBUG, "SNMPD is running");
++	snmp_agent_init(args->socket, args->base_mib);
++	free((void *)args);
++	if (global_data->register_vrrp_mibs) {
++		vrrp_snmp_register_mibs();
++		global_data->register_vrrp_mibs = 0;
++	}
++	return 0;
++}
++
+ void
+ snmp_agent_init(const char *snmp_socket, bool base_mib)
+ {
+@@ -287,7 +329,7 @@
+ 	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID,
+ 	    NETSNMP_DS_LIB_DONT_PERSIST_STATE, TRUE);
+ 	/* Do not log connection errors (may need to be removed for debugging */
+-        netsnmp_ds_set_boolean(NETSNMP_DS_APPLICATION_ID,
++    netsnmp_ds_set_boolean(NETSNMP_DS_APPLICATION_ID,
+ 	    NETSNMP_DS_AGENT_NO_CONNECTION_WARNINGS, TRUE);
+ 	/* Do not load any MIB */
+ 	setenv("MIBS", "", 1);
+--- a/keepalived/include/snmp.h
++++ b/keepalived/include/snmp.h
+@@ -43,18 +43,26 @@
+ 
+ #include "list.h"
+ #include "utils.h"
++#include "scheduler.h"
+ 
+ #define SNMP_DEFAULT_NETWORK_SOCKET	"udp:localhost:705"
+ 
+ #define KEEPALIVED_OID 1, 3, 6, 1, 4, 1, 9586, 100, 5
+ #define SNMPTRAP_OID 1, 3, 6, 1, 6, 3, 1, 1, 4, 1, 0
+ #define GLOBAL_OID {KEEPALIVED_OID, 1}
++#define SNMP_RETRY_CEILING 8
+ 
+ typedef union _long_ret {
+ 	unsigned long u;
+ 	long s;
+ } longret_t;
+ 
++typedef struct _snmp_args {
++	const char * socket;
++	bool base_mib;
++	int retries;
++} snmp_args_t;
++
+ extern unsigned long snmp_scope(int scope);
+ extern void* snmp_header_list_table(struct variable *vp, oid *name, size_t *length,
+ 				    int exact, size_t *var_len, WriteMethod **write_method,
+@@ -65,5 +73,6 @@
+ 			      size_t varsize, size_t varlen);
+ extern void snmp_unregister_mib(oid *myoid, size_t len);
+ extern void snmp_agent_close(bool base_mib);
++extern int snmp_check_for_daemon(thread_t *);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp_snmp.c
++++ b/keepalived/vrrp/vrrp_snmp.c
+@@ -3893,11 +3893,8 @@
+ }
+ 
+ void
+-vrrp_snmp_agent_init(const char *snmp_socket)
++vrrp_snmp_register_mibs(void)
+ {
+-	/* We let the check process handle the global OID if it is running and with snmp */
+-	snmp_agent_init(snmp_socket, vrrp_handles_global_oid());
+-
+ #ifdef _WITH_SNMP_KEEPALIVED_
+ 	if (global_data->enable_snmp_keepalived)
+ 		snmp_register_mib(vrrp_oid, OID_LENGTH(vrrp_oid), "KEEPALIVED-VRRP",
+@@ -3922,6 +3919,19 @@
+ }
+ 
+ void
++vrrp_snmp_agent_init(const char *snmp_socket)
++{
++	/* We let the check process handle the global OID if it is running and with snmp */
++	snmp_args_t * snmp_args = (snmp_args_t *)malloc(sizeof(snmp_args_t));
++	snmp_args->socket = snmp_socket;
++	snmp_args->base_mib = vrrp_handles_global_oid();
++	snmp_args->retries = 0;
++	thread_add_event(master, snmp_check_for_daemon, (void *)snmp_args, 0);
++	log_message(LOG_INFO, "Check SNMP presence event added to scheduler.");
++	global_data->register_vrrp_mibs = 1;
++}
++
++void
+ vrrp_snmp_agent_close(void)
+ {
+ #ifdef _WITH_SNMP_KEEPALIVED_
+--- a/keepalived/include/global_data.h
++++ b/keepalived/include/global_data.h
+@@ -120,6 +120,7 @@
+ 	bool				enable_snmp_keepalived;
+ 	bool				enable_snmp_rfcv2;
+ 	bool				enable_snmp_rfcv3;
++	bool				register_vrrp_mibs;
+ #endif
+ #ifdef _WITH_LVS_
+ 	bool				enable_snmp_checker;
+--- a/keepalived/include/vrrp_snmp.h
++++ b/keepalived/include/vrrp_snmp.h
+@@ -63,6 +63,7 @@
+ /* Prototypes */
+ extern void vrrp_snmp_agent_init(const char *);
+ extern void vrrp_snmp_agent_close(void);
++extern void vrrp_register_mibs(void);
+ 
+ #ifdef _WITH_SNMP_KEEPALIVED_
+ extern void vrrp_snmp_instance_trap(vrrp_t *);

@@ -1,0 +1,35 @@
+---
+ keepalived/include/vrrp_ipaddress.h |    1 +
+ keepalived/vrrp/vrrp_ipaddress.c    |    4 ++++
+ 2 files changed, 5 insertions(+)
+
+--- a/keepalived/include/vrrp_ipaddress.h
++++ b/keepalived/include/vrrp_ipaddress.h
+@@ -53,6 +53,7 @@
+ 		struct in6_addr sin6_addr;
+ 	} u;
+ 
++	uint8_t configured_prefix;
+ 	interface_t		*ifp;			/* Interface owning IP address */
+ 	char			*label;			/* Alias name, e.g. eth0:1 */
+ 	bool			set;			/* TRUE if addr is set */
+--- a/keepalived/vrrp/vrrp_ipaddress.c
++++ b/keepalived/vrrp/vrrp_ipaddress.c
+@@ -224,6 +224,9 @@
+ 	if (netlink_talk(&nl_cmd, &req.n) < 0)
+ 		status = -1;
+ 
++	if (cmd == IPADDRESS_DEL)
++		ipaddress->ifa.ifa_prefixlen =ipaddress->configured_prefix;
++
+ 	return status;
+ }
+ 
+@@ -457,6 +460,7 @@
+ 		new->ifa.ifa_prefixlen = (uint8_t)atoi(p + 1);
+ 		*p = 0;
+ 	}
++	new->configured_prefix = new->ifa.ifa_prefixlen;
+ 
+ 	addr = (IP_IS6(new)) ? (void *) &new->u.sin6_addr :
+ 			       (void *) &new->u.sin.sin_addr;

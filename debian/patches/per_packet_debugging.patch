@@ -1,0 +1,268 @@
+---
+ keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template |   16 +++++
+ keepalived/include/vrrp_data.h                         |    1 
+ keepalived/include/vrrp_debug.h                        |   17 +++++
+ keepalived/vrrp/vrrp.c                                 |    4 +
+ keepalived/vrrp/vrrp_data.c                            |    1 
+ keepalived/vrrp/vrrp_dbus.c                            |   35 +++++++++++
+ keepalived/vrrp/vrrp_scheduler.c                       |   51 +++++++++--------
+ keepalived/vrrp/vrrp_sync.c                            |    8 ++
+ 8 files changed, 109 insertions(+), 24 deletions(-)
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -69,6 +69,7 @@
+ 	list			vrrp_script;
+ 	list			vrrp_switch;
+ 	GHashTable * 	vrrp_tracked_routes;
++	uint32_t 		vrrp_debug_flag;
+ } vrrp_data_t;
+ 
+ /* Global Vars exported */
+--- /dev/null
++++ b/keepalived/include/vrrp_debug.h
+@@ -0,0 +1,17 @@
++/*
++ * VRRP debugging macros to reduce chatter
++ * Copyright (C) 2019 AT&T
++ */
++
++#ifndef _VRRP_DEBUG_H_
++#define _VRRP_DEBUG_H_
++
++#include "vrrp_data.h"
++
++#define VRRP_DEBUG_PER_PACKET   0x00000001
++#define VRRP_DEBUG_ALL          0x11111111
++
++#define IS_VRRP_DEBUG_PER_PACKET() \
++        (vrrp_data->vrrp_debug_flag & VRRP_DEBUG_PER_PACKET)
++
++#endif
+\ No newline at end of file
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -37,6 +37,7 @@
+ #include "vrrp_arp.h"
+ #include "vrrp_ndisc.h"
+ #include "vrrp_if.h"
++#include "vrrp_debug.h"
+ #include "ipvswrapper.h"
+ #include "memory.h"
+ #include "notify.h"
+@@ -1227,7 +1228,8 @@
+ 			if ((auxdata->tp_status & TP_STATUS_VLAN_TPID_VALID) != 0) {
+ 				// Packets that have VLAN tags are not destined for us, the control plane strips them before
+ 				// sending them to keepalived. Ignore any that we see
+-				log_message(LOG_DEBUG, "Got a packet with a VLAN tag - dropping it before processing");
++				if (IS_VRRP_DEBUG_PER_PACKET())
++					log_message(LOG_DEBUG, "Got a packet with a VLAN tag - dropping it before processing");
+ 				return sock->fd_in;
+ 			}
+ 		}
+@@ -1235,24 +1237,26 @@
+ 
+     /* If no instance found => ignore the advert */
+ 	if (!vrrp) {
+-		if (sock->family == AF_INET) {
+-			iph = (struct iphdr *) eth_payload;
+-			pkt_saddr_ipv4 = iph->saddr;
+-
+-			inet_ntop(AF_INET, &pkt_saddr_ipv4,
+-						ipv4_str, sizeof(ipv4_str));
+-			ip_str = ipv4_str;
+-		} else {
+-			ip6h = (struct ip6_hdr *) eth_payload;
++		if (IS_VRRP_DEBUG_PER_PACKET()) {
++			if (sock->family == AF_INET) {
++				iph = (struct iphdr *) eth_payload;
++				pkt_saddr_ipv4 = iph->saddr;
++
++				inet_ntop(AF_INET, &pkt_saddr_ipv4,
++							ipv4_str, sizeof(ipv4_str));
++				ip_str = ipv4_str;
++			} else {
++				ip6h = (struct ip6_hdr *) eth_payload;
+ 
+-			inet_ntop(AF_INET6, &ip6h->ip6_src,
+-						ipv6_str, sizeof(ipv6_str));
+-			ip_str = ipv6_str;
++				inet_ntop(AF_INET6, &ip6h->ip6_src,
++							ipv6_str, sizeof(ipv6_str));
++				ip_str = ipv6_str;
++			}
++			log_message(
++				LOG_INFO,
++				"Received packet from %s for a VRRP Instance %d which doesn't exist on receiving interface %s",
++				ip_str, hd->vrid, IF_NAME(if_get_by_ifindex(sock->recv_ifindex)));
+ 		}
+-		log_message(
+-			LOG_INFO,
+-			"Received packet from %s for a VRRP Instance %d which doesn't exist on receiving interface %s",
+-			ip_str, hd->vrid, IF_NAME(if_get_by_ifindex(sock->recv_ifindex)));
+ 		return sock->fd_in;
+     }
+ 
+@@ -1271,7 +1275,8 @@
+ 		 */
+ 		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
+ 			/* DROP our own packets */
+-			log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
++			if (IS_VRRP_DEBUG_PER_PACKET())
++				log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
+ 			return sock->fd_in;
+ 		}
+ 
+@@ -1297,7 +1302,8 @@
+ 		 */
+ 		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
+ 			/* DROP our own packets */
+-			log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
++			if (IS_VRRP_DEBUG_PER_PACKET())
++				log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
+ 			return sock->fd_in;
+ 		}
+ 
+@@ -1308,9 +1314,10 @@
+         ip_str = ipv6_str;
+     }
+ 
+-    log_message(LOG_DEBUG,
+-        "VRRP_Instance(%s) - Peer Packet with src = %s, and priority %d",
+-                vrrp->iname, ip_str, hd->priority);
++	if (IS_VRRP_DEBUG_PER_PACKET())
++		log_message(LOG_DEBUG,
++			"VRRP_Instance(%s) - Peer Packet with src = %s, and priority %d",
++			vrrp->iname, ip_str, hd->priority);
+ 
+ 	/* Run the FSM handler */
+ 	prev_state = vrrp->state;
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -685,6 +685,7 @@
+ 	new->vrrp_script = alloc_list(free_vscript, dump_vscript);
+ 	new->vrrp_socket_pool = alloc_list(free_sock, dump_sock);
+ 	new->vrrp_tracked_routes = g_hash_table_new(g_str_hash, g_str_equal);
++	new->vrrp_debug_flag = 0;
+ 
+ 	return new;
+ }
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -36,6 +36,7 @@
+ #include "vrrp_sync.h"
+ #include "vrrp_index.h"
+ #include "vrrp_if.h"
++#include "vrrp_debug.h"
+ #ifdef _HAVE_VRRP_VMAC_
+ #include "vrrp_vmac.h"
+ #endif
+@@ -1090,7 +1091,8 @@
+ 	struct iovec iov;
+ 	char cbuf[256];
+ 
+-    log_message(LOG_INFO, "VRRP_Instance(%s) Send Advertisement", vrrp->iname);
++	if (IS_VRRP_DEBUG_PER_PACKET())
++		log_message(LOG_INFO, "VRRP_Instance(%s) Send Advertisement", vrrp->iname);
+ 
+ 	/* Build the message data */
+ 	memset(&msg, 0, sizeof(msg));
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
+@@ -32,6 +32,22 @@
+ 	-->
+ 	<method name='ReloadConfig'>
+ 	</method>
++	<!--
++	  Add a debug flag, useful for Per Packet Debugging
++	  Invoke using
++	  sudo dbus-send --system --dest=org.keepalived.Vrrp1 --type=method_call /org/keepalived/Vrrp1/Vrrp  org.keepalived.Vrrp1.Vrrp.AddDebug uint32:"1"
++	-->
++	<method name='AddDebug'>
++	  <arg type='u' name='DebugFlag'/>
++	</method>
++	<!--
++	  Remove a debug flag
++	  Invoke using
++	  sudo dbus-send --system --dest=org.keepalived.Vrrp1 --type=method_call /org/keepalived/Vrrp1/Vrrp  org.keepalived.Vrrp1.Vrrp.RemoveDebug uint32:"1"
++	-->
++	<method name='RemoveDebug'>
++	  <arg type='u' name='DebugFlag'/>
++	</method>
+ C		<!--
+ C		  CreateInstance:
+ C		  @iname: unique name for the new instance.
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -66,6 +66,8 @@
+ 	DBUS_PRINT_DATA,
+ 	DBUS_PRINT_STATS,
+ 	DBUS_RELOAD,
++	DBUS_ADD_DEBUG,
++	DBUS_REMOVE_DEBUG,
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 	DBUS_CREATE_INSTANCE,
+ 	DBUS_DESTROY_INSTANCE,
+@@ -382,6 +384,24 @@
+ 			g_dbus_method_invocation_return_value(invocation, NULL);
+ 			kill(getppid(), SIGHUP);
+ 		}
++		else if (g_strcmp0(method_name, "AddDebug") == 0) {
++			uint32_t debug_flag;
++			g_variant_get(parameters, "(u)", &debug_flag);
++			ent.action = DBUS_ADD_DEBUG;
++			ent.args = g_variant_new("(u)", debug_flag);
++			process_method_call(&ent);
++			g_variant_unref(ent.args);
++			g_dbus_method_invocation_return_value(invocation, NULL);
++		}
++		else if (g_strcmp0(method_name, "RemoveDebug") == 0) {
++			uint32_t debug_flag;
++			g_variant_get(parameters, "(u)", &debug_flag);
++			ent.action = DBUS_REMOVE_DEBUG;
++			ent.args = g_variant_new("(u)", debug_flag);
++			process_method_call(&ent);
++			g_variant_unref(ent.args);
++			g_dbus_method_invocation_return_value(invocation, NULL);
++		}
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 		else if (g_strcmp0(method_name, "CreateInstance") == 0) {
+ 			g_variant_get(parameters, "(ssuu)", &iname, &ifname, &ent.vrid, &family);
+@@ -741,6 +761,21 @@
+ 			log_message(LOG_INFO, "Printing VRRP stats on DBus request");
+ 			vrrp_print_stats();
+ 		}
++		else if (ent->action == DBUS_ADD_DEBUG) {
++			uint32_t debug_flag;
++			g_variant_get(ent->args, "(u)", &debug_flag);
++			log_message(LOG_INFO, "Changing debug flag to include 0x%04x", debug_flag);
++			vrrp_data->vrrp_debug_flag |= debug_flag;
++			log_message(LOG_INFO, "Debug flag is now 0x%04x", vrrp_data->vrrp_debug_flag);
++		}
++		else if (ent->action == DBUS_REMOVE_DEBUG) {
++			uint32_t debug_flag;
++			g_variant_get(ent->args, "(u)", &debug_flag);
++			log_message(LOG_INFO, "Remove debug flag 0x%04x", debug_flag);
++			if (vrrp_data->vrrp_debug_flag & debug_flag)
++				vrrp_data->vrrp_debug_flag ^= debug_flag;
++			log_message(LOG_INFO, "Debug flag is now 0x%04x", vrrp_data->vrrp_debug_flag);
++		}
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 		else if (ent->action == DBUS_CREATE_INSTANCE) {
+ 			g_variant_get(ent->args, "(s)", &name);
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -211,7 +211,13 @@
+ 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+ 		isync = ELEMENT_DATA(e);
+ 		if (isync != vrrp && (isync->wantstate != VRRP_STATE_GOTO_MASTER &&
+-				      isync->wantstate != VRRP_STATE_MAST)) {
++								isync->wantstate != VRRP_STATE_MAST)) {
++			log_message(
++				LOG_INFO,
++				"VRRP_Instance(%s) should move to MASTER state but not all VRRP " \
++				"instances in VRRP_Group(%s) are moving to MASTER. Holding %s " \
++				"to the group's state.",
++				vrrp->iname, GROUP_NAME(vgroup), vrrp->iname);
+ 			return 0;
+ 		}
+ 	}

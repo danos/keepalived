@@ -1,0 +1,6 @@
+# Options to pass to keepalived
+
+CONFIG=/etc/keepalived/keepalived.conf
+# DAEMON_ARGS are appended to the keepalived command-line
+DAEMON_ARGS="--snmp --log-facility=7 --log-detail --dump-conf --use-file $CONFIG --release-vips -x"
+

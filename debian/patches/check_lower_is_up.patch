@@ -1,0 +1,121 @@
+---
+ keepalived/include/vrrp_if.h   |    5 +++++
+ keepalived/vrrp/vrrp_if.c      |    8 +++++++-
+ keepalived/vrrp/vrrp_netlink.c |   26 +++++++++++++++++++++++---
+ 3 files changed, 35 insertions(+), 4 deletions(-)
+
+--- a/keepalived/include/vrrp_if.h
++++ b/keepalived/include/vrrp_if.h
+@@ -31,6 +31,8 @@
+ 
+ /* needed to get correct values for SIOC* */
+ #include <linux/sockios.h>
++/* Need expanded IFF_ values for IFF_LOWER_UP */
++#include <linux/if.h>
+ 
+ /* local includes */
+ #include "scheduler.h"
+@@ -97,6 +99,7 @@
+ 	uint32_t		reset_arp_filter_value;	/* Original value of arp_filter to be restored */
+ 	uint32_t		reset_promote_secondaries; /* Count of how many vrrps have changed promote_secondaries on interface */
+ 	bool			promote_secondaries_already_set; /* Set if promote_secondaries already set on interface */
++	bool			carrier_is_up; /* Carrier for interface is up (useful for bonded interfaces)*/
+ } interface_t;
+ 
+ #define GARP_DELAY_PTR(X) ((X)->switch_delay ? (X)->switch_delay : &((X)->if_delay))
+@@ -126,6 +129,8 @@
+ #define IF_LINKBEAT(X) ((X)->linkbeat)
+ #define IF_ISUP(X) (((X)->flags & IFF_UP)      && \
+ 		    ((X)->flags & IFF_RUNNING) && \
++		    ((X)->flags & IFF_LOWER_UP) && \
++		    ((X)->carrier_is_up) && \
+ 		    if_linkbeat(X))
+ 
+ /* Global data */
+--- a/keepalived/vrrp/vrrp_if.c
++++ b/keepalived/vrrp/vrrp_if.c
+@@ -405,7 +405,13 @@
+ 	if (ifp->flags & IFF_RUNNING)
+ 		log_message(LOG_INFO, " is RUNNING");
+ 
+-	if (!(ifp->flags & IFF_UP) && !(ifp->flags & IFF_RUNNING))
++	if (ifp->flags & IFF_LOWER_UP)
++		log_message(LOG_INFO, " is LOWER UP");
++
++	if (ifp->carrier_is_up)
++		log_message(LOG_INFO, " is CARRIER UP");
++
++	if (!(ifp->flags & IFF_LOWER_UP) && !(ifp->flags & IFF_UP) && !(ifp->flags & IFF_RUNNING) && (!ifp->carrier_is_up))
+ 		log_message(LOG_INFO, " is DOWN");
+ 
+ 	log_message(LOG_INFO, " MTU = %d", ifp->mtu);
+--- a/keepalived/vrrp/vrrp_netlink.c
++++ b/keepalived/vrrp/vrrp_netlink.c
+@@ -823,6 +823,13 @@
+ 		}
+ 	}
+ 
++	if (tb[IFLA_CARRIER]) {
++		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
++	} else {
++		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
++		ifp->carrier_is_up = 1;
++	}
+ #ifdef _HAVE_VRRP_VMAC_
+ 	/* See if this interface is a MACVLAN of ours */
+ 	if (tb[IFLA_LINKINFO] && tb[IFLA_LINK]){
+@@ -909,6 +916,13 @@
+ #endif
+ 			ifp->flags = ifi->ifi_flags;
+ 		}
++		if (tb[IFLA_CARRIER]) {
++			ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++			log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
++		} else {
++			log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
++			ifp->carrier_is_up = 1;
++		}
+ 		return 0;
+ 	}
+ 
+@@ -1123,6 +1137,7 @@
+ 	interface_t *ifp;
+ 	size_t len;
+ 	int status;
++	char *name;
+ 
+ 	ifi = NLMSG_DATA(h);
+ 	if (!(h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK))
+@@ -1137,6 +1152,7 @@
+ 	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
+ 	if (tb[IFLA_IFNAME] == NULL)
+ 		return -1;
++	name = (char *) RTA_DATA(tb[IFLA_IFNAME]);
+ 
+ 	/* ignore loopback device */
+ 	if (ifi->ifi_type == ARPHRD_LOOPBACK)
+@@ -1150,8 +1166,6 @@
+ 	ifp = if_get_by_ifindex((ifindex_t)ifi->ifi_index);
+ 	if (!ifp) {
+ 		if (h->nlmsg_type == RTM_NEWLINK) {
+-			char *name;
+-			name = (char *) RTA_DATA(tb[IFLA_IFNAME]);
+ 			ifp = if_get_by_ifname(name);
+ 			if (!ifp) {
+ 				ifp = (interface_t *) MALLOC(sizeof(interface_t));
+@@ -1183,7 +1197,13 @@
+ #else
+ 	ifp->flags = ifi->ifi_flags;
+ #endif
+-
++	if (tb[IFLA_CARRIER]) {
++		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
++	} else {
++		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
++		ifp->carrier_is_up = 1;
++	}
+ 	return 0;
+ }
+ 

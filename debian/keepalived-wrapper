@@ -1,0 +1,9 @@
+#! /bin/sh
+
+# Need to execute in the any routing domain with routing domain VRF
+# model, but no special handling required for upstream VRF model
+if [ -f /proc/self/rtg_domain ]; then
+    /bin/ip rdid exec any /usr/sbin/keepalived $@
+else
+    /usr/sbin/keepalived $@
+fi

@@ -1,0 +1,27 @@
+---
+ lib/scheduler.c |   11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/lib/scheduler.c
++++ b/lib/scheduler.c
+@@ -495,9 +495,20 @@
+ 		break;
+ 	case THREAD_READY:
+ 	case THREAD_READY_FD:
++	case THREAD_READ_TIMEOUT:
++	case THREAD_WRITE_TIMEOUT:
+ 		thread_list_delete(&thread->master->ready, thread);
+ 		break;
+ 	default:
++		log_message(LOG_INFO, "Cancel of unhandled type %d",
++				      thread->type);
++		/*
++		 * Unused threads are already on the unused list, adding them
++		 * for a second time will corrupt the list.
++		 */
++		if (thread->type == THREAD_UNUSED)
++			return;
++
+ 		break;
+ 	}
+ 

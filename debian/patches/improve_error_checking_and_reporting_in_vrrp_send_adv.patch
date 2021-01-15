@@ -1,0 +1,36 @@
+---
+ keepalived/vrrp/vrrp.c |   16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1083,17 +1083,25 @@
+ 			vrrp_build_pkt(vrrp, prio, addr);
+ 			ret = vrrp_send_pkt(vrrp, addr);
+ 			if (ret < 0) {
+-				log_message(LOG_INFO, "VRRP_Instance(%s) Cant send advert to %s (%m)"
++				log_message(LOG_INFO, "VRRP_Instance(%s) Can't send advert to %s (%m)"
+ 						    , vrrp->iname, inet_sockaddrtos(addr));
++			} else {
++				++vrrp->stats->advert_sent;
++				/* sent it */
+ 			}
+ 		}
+ 	} else {
+ 		vrrp_build_pkt(vrrp, prio, NULL);
+-		vrrp_send_pkt(vrrp, NULL);
++		ret = vrrp_send_pkt(vrrp, NULL);
++		if (ret < 0) {
++			log_message(LOG_INFO, "VRRP_Instance(%s) Can't send advert to multicast (%m)",
++				    vrrp->iname);
++		} else {
++			++vrrp->stats->advert_sent;
++			/* sent it */
++		}
+ 	}
+ 
+-	++vrrp->stats->advert_sent;
+-	/* sent it */
+ 	return 0;
+ }
+ 

@@ -1,0 +1,149 @@
+---
+ keepalived/vrrp/vrrp_ipaddress.c |   91 +++++++++++++++++++++++++++++++++++++++
+ lib/utils.c                      |    2 
+ lib/utils.h                      |    1 
+ 3 files changed, 93 insertions(+), 1 deletion(-)
+
+--- a/keepalived/vrrp/vrrp_ipaddress.c
++++ b/keepalived/vrrp/vrrp_ipaddress.c
+@@ -22,6 +22,10 @@
+ 
+ #include "config.h"
+ 
++/* System include */
++#include <netinet/in.h>
++#include <ifaddrs.h>
++
+ /* local include */
+ #include "vrrp_ipaddress.h"
+ #ifdef _HAVE_LIBIPTC_
+@@ -56,6 +60,72 @@
+ 	return buf;
+ }
+ 
++/*
++ * Compare the IPv4 ipaddress and prefix being added to see if the combination
++ * of the two overlap with an existing ipaddress and prefix. Return true if
++ * there is an overlap of subnets and false otherwise.
++ */
++static bool
++does_ipv4_subnet_overlap(ip_address_t *ipaddress)
++{
++	struct ifaddrs *ifaddr, *ifa;
++	int family = ipaddress->ifa.ifa_family;
++	uint32_t comparison_prefix_length;
++	uint32_t comparison_netmask;
++	uint32_t comparison_subnet;
++	uint32_t new_subnet;
++
++	if (family == AF_INET6) {
++		return false;
++	}
++
++	log_message(LOG_INFO, "Checking if the address we're trying to add overlaps"
++				" with any other address");
++	new_subnet = ipaddress->u.sin.sin_addr.s_addr &
++				 inet_cidrtomask(ipaddress->ifa.ifa_prefixlen);
++	if (getifaddrs(&ifaddr) == -1) {
++		log_message(LOG_INFO, "Failed to get interface information while "
++					"checking for an IPv4 subnet overlap");
++		return false;
++	}
++
++	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != family) {
++			continue;
++		}
++		comparison_netmask =
++			(*(struct sockaddr_in *)ifa->ifa_netmask).sin_addr.s_addr;
++		comparison_subnet =
++			(*(struct sockaddr_in *)ifa->ifa_addr).sin_addr.s_addr &
++			comparison_netmask;
++
++		/*
++		 * Kernighan method to find how many bits are set, will loop as many
++		 * times as there are bits set.
++		 */
++		comparison_prefix_length = 0;
++		while (comparison_netmask != 0) {
++			comparison_netmask = comparison_netmask & (comparison_netmask - 1);
++			comparison_prefix_length++;
++		}
++
++		/*
++		 * Two checks are needed to see if subnets overlap:
++		 *  1) The base subnets must be the same (172.16.1.0 == 172.16.1.0)
++		 *  2) The prefix lengths must be the same as well. This catches the
++		 *     first subnet for overlapping prefixes (172.16.1.10/24 ==
++		 * 	   172.16.1.0 and 172.16.1.64/25 == 172.16.1.0)
++		 */
++		if ((comparison_subnet == new_subnet) &&
++			(comparison_prefix_length == ipaddress->ifa.ifa_prefixlen)) {
++			freeifaddrs(ifaddr);
++			return true;
++		}
++	}
++	freeifaddrs(ifaddr);
++	return false;
++}
++
+ /* Add/Delete IP address to a specific interface_t */
+ int
+ netlink_ipaddress(ip_address_t *ipaddress, int cmd)
+@@ -67,7 +137,28 @@
+ 		struct ifaddrmsg ifa;
+ 		char buf[256];
+ 	} req;
++	char *addr_str;
+ 
++	if (ipaddress->ifa.ifa_family == AF_INET) {
++		/*
++		 * When two IP addresses have matching subnets deleting one of the ip
++		 * addresses will delete both routes in the kernel. This causes problems
++		 * with traffic forwarding. To avoid this when adding new VIPs we should
++		 * check existing IP addresses and when an overlap is found add the VIPs
++		 * with a /32 prefix instead of the configured prefix length.
++		 *
++		 * TODO: IPv6 for similar problem, the usecase that this was found for
++		 * 		 was IPv4. There may be a similar problem with IPv6.
++		 */
++		if ((cmd == IPADDRESS_ADD) && does_ipv4_subnet_overlap(ipaddress)) {
++			addr_str = ipaddresstos(NULL, ipaddress);
++			log_message(LOG_INFO, "New IP subnet for %s/%d overlaps with an IP "
++			  			"subnet that already exists. Overriding prefix length "
++						"to be /32",
++			   			addr_str, ipaddress->ifa.ifa_prefixlen);
++			ipaddress->ifa.ifa_prefixlen = 32;
++		}
++	}
+ 	memset(&req, 0, sizeof (req));
+ 
+ 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof (struct ifaddrmsg));
+--- a/lib/utils.c
++++ b/lib/utils.c
+@@ -456,6 +456,7 @@
+ {
+ 	return 0xffffffff - netmask + network;
+ }
++#endif
+ 
+ /*
+  * Convert CIDR netmask notation to long notation.
+@@ -470,7 +471,6 @@
+ 		mask |= (1 << (31 - b));
+ 	return ntohl(mask);
+ }
+-#endif
+ 
+ /* Getting localhost official canonical name */
+ char *
+--- a/lib/utils.h
++++ b/lib/utils.h
+@@ -73,6 +73,7 @@
+ extern void set_std_fd(int);
+ extern int32_t get_prefix_for_ip_address(char *, int);
+ extern int32_t get_prefix_from_netmask(struct sockaddr *);
++uint32_t inet_cidrtomask(uint8_t cidr);
+ #ifndef _HAVE_LIBIPTC_
+ extern int fork_exec(char **argv);
+ #endif

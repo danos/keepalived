@@ -1,0 +1,15 @@
+keepalived for debian
+---------------------
+
+This package has been build against the 2.4.28 and 2.6.11
+kernel headers as older kernels have buggy ipvs code.
+
+So you need a newer kernel to get keepalived working properly.
+
+See http://sourceforge.net/mailarchive/forum.php?thread_id=4855643&forum_id=3211
+and http://sourceforge.net/mailarchive/forum.php?thread_id=5353482&forum_id=3211
+for more information.
+
+Keepalived will not work with debian default kernels.
+
+ -- Alexander Wirt <formorer@debian.org>  Wed, 27 Apr 2005 20:07:22 +0200

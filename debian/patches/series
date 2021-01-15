@@ -1,0 +1,52 @@
+##Recommended critical upstream fix
+fix_ipv6_always_using_v3
+
+##Upstream Candidates - Divergence in use of vMAC code.
+lvs_problems.patch # Upstream should have this in the next few days (Nov-03-2016) https://github.com/acassen/keepalived/pull/447
+0193-Cleanup-RFC-Compliant-implementation.patch
+use-rfc-vmac-for-v3-ipv6.patch
+fix-vrrp-preemption-takes-too-long
+handle-thread-cancel-for-timeout-threads.patch
+
+##Not Upstream Candidates
+fix_sync_timers.patch
+vyatta-if-additions.patch
+snmp_fixes.patch
+add-dynamic-ipao-detection.patch
+stop_incorrect_ip_route_removal.patch
+bind-send-socket-to-interface-also-for-multicast.patch
+
+##Upstream reversions
+check_for_snmp_presence.patch
+make_no_accept_default.patch
+enhance-vrrp-notify-handler
+
+##Already merged upstream, awaiting downstream sync
+
+##Temporary patch to fix reloading of keepalived config.
+delete_vmac_interface_on_reload.patch
+fix-deb9-build.patch
+add_pathmon_tracking
+improve_error_checking_and_reporting_in_vrrp_send_adv.patch
+
+## Changes for terminating VRRP forus on MACVLAN
+terminate_forus_macvlan.patch
+resync_on_ENOBUFF.patch
+add_vrrp_group_start_delay.patch
+reduce_msdowntimer_when_invalid_adv_recv.patch
+dbus_reset_group_to_backup.patch
+add-route-to-tracking.patch
+per_packet_debugging.patch
+vci_dbus_enhancements.patch
+IPv6-intf-link-local-being-lost-on-reload.patch
+check_lower_is_up.patch
+fix_sync_group_state_4.patch
+ensure_router_id_is_populated.patch
+add_effective_and_configure_prefix.patch
+reset_groups_to_backup_on_configured_priority_change.patch
+add_transition_to_master_timer_expired.patch
+defer_intf_creation.patch
+
+## CVE fix from upstream
+security_fix_tmp_files.patch
+configure_tmp_file_path.patch

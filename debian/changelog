@@ -1,0 +1,75 @@
+keepalived (1.2.24-git66c870aa+vyatta34) unstable; urgency=medium
+
+  * Bugfix/Don't start in BACKUP when nopreempt set
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Mon, 31 Aug 2020 15:43:39 +0100
+
+keepalived (1.2.24-git66c870aa+vyatta33) unstable; urgency=medium
+
+  * Bugfix/Don't add debug flag on remove call
+  * Bugfix/set state to BACKUP when cfg prio changes
+  * Add log for instance in SG not going to master
+  * Add master down timer log reason
+  * Apply upstream CVE fix
+  * Bugfix/Stop crash when intf not yet present
+  * Bugfix/Don't send VRRPv3 SNMP traps for VRRPv2
+  * Allow multiple VRID on an intf when deferring intf
+  * Bugfix/Allow multiple groups on a deferred intf
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Mon, 03 Aug 2020 09:31:34 +0100
+
+keepalived (1.2.24-git66c870aa+vyatta32) unstable; urgency=medium
+
+  * Add DBus method to retrieve recv intf
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Wed, 27 May 2020 10:32:48 +0100
+
+keepalived (1.2.24-git66c870aa+vyatta31) unstable; urgency=medium
+
+  * Bugfix/Reset prefix when deleting IP addresses
+  * Bugfix/Sync carrier_is_up from netlink messages
+  * Bugfix/No instance log message wasn't intuitive
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Tue, 12 May 2020 17:25:27 +0100
+
+keepalived (1.2.24-git66c870aa+vyatta30) unstable; urgency=medium
+
+  * Bugfix/Ensure router_id contains valid data
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Tue, 28 Apr 2020 11:47:15 +0100
+
+keepalived (1.2.24-git66c870aa+vyatta29) unstable; urgency=medium
+
+  * Bugfix/Use the correct member for SyncGroup DBus
+  * Bugfix/Stop syncgroup state 4 lockup
+  * Bugfix/Fix VRRPv2 SNMP timeout
+  * Bugfix/IPv6 Global IPAO restricted to RFC
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Fri, 03 Apr 2020 12:34:37 +0100
+
+keepalived (1.2.24-git66c870aa+vyatta28) unstable; urgency=medium
+
+  * Update service file PID line
+  * Bugfix/check for IPAO global IPv6 addresses
+  * Fix IPv6 Source address being removed on reload
+  * Enhance IF_ISUP check to include lower layers
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Mon, 02 Mar 2020 12:04:02 +0000
+
+keepalived (1.2.24-git66c870aa+vyatta27) unstable; urgency=medium
+
+  * Add new properties to dbus object
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Thu, 19 Dec 2019 10:58:57 +0000
+
+keepalived (1.2.24-git66c870aa+vyatta26) unstable; urgency=medium
+
+  * DANOS Import Master
+
+ -- Vyatta Package Maintainers <DL-vyatta-help@att.com> Tue, 05 Nov 2019 13:00:00 +0000
+
+keepalived (1.2.24-git66c870aa+vyatta23.1.1) unstable; urgency=medium
+
+  * DANOS Import
+
+ -- Vyatta Package Maintainers <DL-vyatta-help@att.com> Thu, 31 Oct 2019 23:00:00 +0000

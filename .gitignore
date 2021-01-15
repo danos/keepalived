@@ -36,8 +36,12 @@ Makefile.in
 /private/
 
 # To be able to build without automake/autoconf comment out the following
-/lib/config.h.in
-/configure
+#/lib/config.h.in
+# Makefile.in
+#/configure
+configure.in.debian
+debian/stamp-autotools*
+debian/vyatta-keepalived.debhelper.log
 
 # For snap builds
 parts/
