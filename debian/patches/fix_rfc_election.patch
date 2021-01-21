@@ -4,7 +4,7 @@
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1486,8 +1486,19 @@
+@@ -1483,8 +1483,19 @@
  			}
  		}
  	} else {

@@ -4,7 +4,7 @@
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1724,8 +1724,22 @@
+@@ -1721,8 +1721,22 @@
  	int ret = 0;
  
  	if (!VRRP_VIP_ISSET(vrrp)) {

@@ -1,10 +1,10 @@
 ---
  keepalived/core/global_data.c    |    8 +
  keepalived/include/global_data.h |    2 
- keepalived/vrrp/vrrp.c           |  246 +++++++++++++++++++++++++++++++++------
+ keepalived/vrrp/vrrp.c           |  254 ++++++++++++++++++++++++++++++++-------
  keepalived/vrrp/vrrp_netlink.c   |    8 +
- keepalived/vrrp/vrrp_scheduler.c |  165 ++++++++++++++++++++++++--
- 5 files changed, 384 insertions(+), 45 deletions(-)
+ keepalived/vrrp/vrrp_scheduler.c |  165 +++++++++++++++++++++++--
+ 5 files changed, 388 insertions(+), 49 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
@@ -149,7 +149,7 @@
  	return sendmsg(vrrp->fd_out, &msg, (addr) ? 0 : MSG_DONTROUTE);
  }
  
-@@ -1683,8 +1766,10 @@
+@@ -1680,8 +1763,10 @@
  
  	addr_cmp = vrrp_saddr_cmp(&vrrp->pkt_saddr, vrrp);
  
@@ -162,10 +162,32 @@
  
  	if (hd->priority < vrrp->effective_priority ||
  		   (hd->priority == vrrp->effective_priority &&
-@@ -1865,46 +1950,135 @@
+@@ -1862,46 +1947,135 @@
  {
  	interface_t *ifp;
  	int fd = -1;
+-
+-	/* Retreive interface_t */
+-	ifp = if_get_by_ifindex(idx);
+-
+-	/* open the socket */
+-	fd = socket(family, SOCK_RAW | SOCK_CLOEXEC, proto);
+-	if (fd < 0) {
+-		int err = errno;
+-		log_message(LOG_INFO, "cant open raw socket. errno=%d", err);
+-		return -1;
+-	}
+-#if !HAVE_DECL_SOCK_CLOEXEC
+-	set_sock_flags(fd, F_SETFD, FD_CLOEXEC);
+-#endif
+-
+-	/* Ensure no unwanted multicast packets are queued to this interface */
+-	if (family == AF_INET)
+-		if_setsockopt_mcast_all(family, &fd);
+-
+-	if (!unicast) {
+-		/* Join the VRRP multicast group */
+-		if_join_vrrp_group(family, &fd, ifp);
 +    int sockopt;
 +	int auxopt;
 +    struct ifreq ifopts;
@@ -179,26 +201,14 @@
 +          "Failed to find interface for ifindex %d", idx);
 +      return -1;
 +    }
- 
--	/* Retreive interface_t */
--	ifp = if_get_by_ifindex(idx);
++
 +    if (family != AF_INET && family != AF_INET6) {
 +        log_message(LOG_ERR,
 +            "VRRP_Interface(%s) Wrong AF to open read socket",
 +            ifp->ifname);
 +        return -1;
 +    }
- 
--	/* open the socket */
--	fd = socket(family, SOCK_RAW | SOCK_CLOEXEC, proto);
--	if (fd < 0) {
--		int err = errno;
--		log_message(LOG_INFO, "cant open raw socket. errno=%d", err);
--		return -1;
--	}
--#if !HAVE_DECL_SOCK_CLOEXEC
--	set_sock_flags(fd, F_SETFD, FD_CLOEXEC);
--#endif
++
 +    /* Open PF_PACKET socket, listening for
 +     * EtherType ETHER_TYPE
 +     */
@@ -209,10 +219,7 @@
 +            ifp->ifname);
 +        return -1;
 +    }
- 
--	/* Ensure no unwanted multicast packets are queued to this interface */
--	if (family == AF_INET)
--		if_setsockopt_mcast_all(family, &fd);
++
 +    /* Allow the socket to be reused - incase connection
 +     * is closed prematurely
 +     */
@@ -224,19 +231,8 @@
 +        close(fd);
 +        return -1;
 +    }
- 
--	if (!unicast) {
--		/* Join the VRRP multicast group */
--		if_join_vrrp_group(family, &fd, ifp);
--	}
- 
--	/* Need to bind read socket so only process packets for interface we're
--	 * interested in.
--	 *
--	 * This is applicable for both unicast and multicast operation as well as
--	 * IPv4 and IPv6.
--	 */
--	if_setsockopt_bindtodevice(&fd, ifp);
++
++
 +    /*
 +     * Bind to device - have to use bind() here as we're using a
 +     * packet socket, see https://www.systutorials.com/docs/linux/man/7-packet/
@@ -250,9 +246,7 @@
 +        close(fd);
 +        return -1;
 +    }
- 
--	if (fd < 0)
--		return -1;
++
 +    /* Join the Multicast MAC group */
 +    if (family == AF_INET ) {
 +        /* Set VRRP Multicast MAC for IPv4 */
@@ -278,10 +272,7 @@
 +        pmreq.mr_address [4]            = ipv6_mcast_mac[4];
 +        pmreq.mr_address [5]            = ipv6_mcast_mac[5];
 +    }
- 
--	if (family == AF_INET6) {
--		/* Let kernel calculate checksum. */
--		if_setsockopt_ipv6_checksum(&fd);
++
 +    /* Join the VRRP Multicast group for the AF */
 +    if (setsockopt (fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP,
 +                    &pmreq, sizeof (pmreq)) < 0 ){
@@ -323,9 +314,22 @@
 +        return -1;
  	}
  
-+	if (fd < 0)
-+		return -1;
-+
+-	/* Need to bind read socket so only process packets for interface we're
+-	 * interested in.
+-	 *
+-	 * This is applicable for both unicast and multicast operation as well as
+-	 * IPv4 and IPv6.
+-	 */
+-	if_setsockopt_bindtodevice(&fd, ifp);
+-
+ 	if (fd < 0)
+ 		return -1;
+ 
+-	if (family == AF_INET6) {
+-		/* Let kernel calculate checksum. */
+-		if_setsockopt_ipv6_checksum(&fd);
+-	}
+-
  	return fd;
  }
  

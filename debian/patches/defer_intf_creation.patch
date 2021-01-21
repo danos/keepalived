@@ -394,7 +394,7 @@
  	VRRP_FSM_READ_TO(vrrp);
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2747,7 +2747,12 @@
+@@ -2744,7 +2744,12 @@
  #endif
  						ifindex_o = vrrp_o->ifp->ifindex;
  

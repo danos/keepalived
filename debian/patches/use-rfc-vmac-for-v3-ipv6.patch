@@ -98,7 +98,7 @@
  		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
  		vrrp->vipset = 0;
  	}
-@@ -2610,6 +2635,8 @@
+@@ -2607,6 +2632,8 @@
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
  		if (!LIST_ISEMPTY(vrrp->evip))
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
