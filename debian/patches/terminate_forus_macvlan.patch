@@ -146,7 +146,7 @@
  	return sendmsg(vrrp->fd_out, &msg, (addr) ? 0 : MSG_DONTROUTE);
  }
  
-@@ -1709,8 +1792,10 @@
+@@ -1706,8 +1789,10 @@
  
  	addr_cmp = vrrp_saddr_cmp(&vrrp->pkt_saddr, vrrp);
  
@@ -159,7 +159,7 @@
  
  	if (hd->priority < vrrp->effective_priority ||
  		   (hd->priority == vrrp->effective_priority &&
-@@ -1891,46 +1976,135 @@
+@@ -1888,46 +1973,135 @@
  {
  	interface_t *ifp;
  	int fd = -1;

@@ -109,7 +109,7 @@
  	 * time_now plus the Master Down Timer, when a non-preemptable packet is
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1432,7 +1432,7 @@
+@@ -1423,7 +1423,7 @@
  	}
  	ret = vrrp_check_packet(vrrp, buf, buflen, check_addr);
  
@@ -118,7 +118,7 @@
  		log_message(LOG_INFO, "VRRP_Instance(%s) ignoring received advertisment..."
  				    ,  vrrp->iname);
  		if (vrrp->version == VRRP_VERSION_3)
-@@ -1582,7 +1582,7 @@
+@@ -1573,7 +1573,7 @@
  		log_message(LOG_INFO,
  		       "VRRP_Instance(%s) Dropping received VRRP packet...",
  		       vrrp->iname);

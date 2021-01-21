@@ -4,7 +4,7 @@
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1614,6 +1614,7 @@
+@@ -1611,6 +1611,7 @@
  	ssize_t ret = 0;
  	unsigned master_adver_int, proto;
  	bool check_addr = false;
@@ -12,7 +12,7 @@
  
  	/* Process the incoming packet */
  	hd = vrrp_get_header(vrrp->family, buf, &proto);
-@@ -1632,13 +1633,15 @@
+@@ -1629,13 +1630,15 @@
  	}
  	ret = vrrp_check_packet(vrrp, buf, buflen, check_addr);
  

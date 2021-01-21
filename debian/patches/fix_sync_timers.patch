@@ -28,7 +28,7 @@
  #endif
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1205,7 +1205,7 @@
+@@ -1199,7 +1199,7 @@
  }
  
  /* becoming master */

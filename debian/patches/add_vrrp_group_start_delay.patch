@@ -19,7 +19,7 @@
  	int			wantstate;		/* user explicitly wants a state (back/mast) */
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2630,6 +2630,12 @@
+@@ -2627,6 +2627,12 @@
  	    !vrrp->ifp->reset_promote_secondaries)
  		set_promote_secondaries(vrrp->ifp);
  

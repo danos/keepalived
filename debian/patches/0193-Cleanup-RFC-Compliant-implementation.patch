@@ -2,13 +2,13 @@
  keepalived/include/vrrp.h        |    5 +--
  keepalived/include/vrrp_data.h   |    2 +
  keepalived/include/vrrp_vmac.h   |    3 +
- keepalived/vrrp/vrrp.c           |   65 ++++++++++++++++++++++++++++++++++++---
+ keepalived/vrrp/vrrp.c           |   62 +++++++++++++++++++++++++++++++++++----
  keepalived/vrrp/vrrp_data.c      |    7 ++--
  keepalived/vrrp/vrrp_parser.c    |    2 +
  keepalived/vrrp/vrrp_print.c     |   12 ++++++-
- keepalived/vrrp/vrrp_scheduler.c |   50 +++++++++++++++++++++++-------
- keepalived/vrrp/vrrp_vmac.c      |   38 +++++++++++++++++++---
- 9 files changed, 155 insertions(+), 29 deletions(-)
+ keepalived/vrrp/vrrp_scheduler.c |   50 ++++++++++++++++++++++++-------
+ keepalived/vrrp/vrrp_vmac.c      |   38 ++++++++++++++++++++---
+ 9 files changed, 152 insertions(+), 29 deletions(-)
 
 --- a/keepalived/include/vrrp.h
 +++ b/keepalived/include/vrrp.h
@@ -67,22 +67,19 @@
  
  	++vrrp->stats->become_master;
  
-@@ -1326,6 +1330,14 @@
+@@ -1326,6 +1330,11 @@
  		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
  		vrrp->vipset = 0;
  	}
 +
-+	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
-+		if (advF) {
-+			netlink_link_up(vrrp);
-+		} else {
-+			netlink_link_down(vrrp);
-+		}
-+	}
++#ifdef _HAVE_VRRP_VMAC_
++	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags) && __test_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags))
++		netlink_link_down(vrrp);
++#endif
  }
  
  void
-@@ -1449,8 +1461,19 @@
+@@ -1449,8 +1458,19 @@
  			}
  		}
  	} else {
@@ -102,7 +99,7 @@
  		vrrp_send_adv(vrrp, vrrp->effective_priority);
  #ifdef _WITH_SNMP_RFCV3_
  		vrrp->stats->master_reason = VRRPV3_MASTER_REASON_PREEMPTED;
-@@ -1798,7 +1821,8 @@
+@@ -1798,7 +1818,8 @@
  									    IF_INDEX(vrrp->ifp);
  	unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
  	vrrp->fd_in = open_vrrp_read_socket(vrrp->family, proto, ifindex, unicast);
@@ -112,7 +109,7 @@
  	alloc_vrrp_fd_bucket(vrrp);
  
  	/* Sync the other desc */
-@@ -2095,7 +2119,8 @@
+@@ -2095,7 +2116,8 @@
  					}
  					else
  						strcpy(vrrp->vmac_ifname, ifp->ifname);
@@ -122,7 +119,7 @@
  					vrrp->vmac_ifindex = ifp->ifindex;
  					__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
  
-@@ -2237,8 +2262,13 @@
+@@ -2237,8 +2259,13 @@
  		for (e = LIST_HEAD(vrrp->vip); e; ELEMENT_NEXT(e)) {
  			vip = ELEMENT_DATA(e);
  			if (!vip->ifa.ifa_index) {
@@ -138,7 +135,7 @@
  			}
  		}
  	}
-@@ -2606,6 +2636,27 @@
+@@ -2606,6 +2633,27 @@
  	}
  }
  
@@ -166,7 +163,7 @@
  /* Diff when reloading configuration */
  void
  clear_diff_vrrp(void)
-@@ -2655,6 +2706,9 @@
+@@ -2655,6 +2703,9 @@
  #endif
  
  #ifdef _HAVE_VRRP_VMAC_
@@ -176,7 +173,7 @@
  			/*
  			 * Remove VMAC if it existed in old vrrp instance,
  			 * but not the new one.
-@@ -2666,6 +2720,7 @@
+@@ -2666,6 +2717,7 @@
  #endif
  
  			/* reset the state */
