@@ -4,7 +4,7 @@
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2961,6 +2961,10 @@
+@@ -2958,6 +2958,10 @@
  	vrrp->state = old_vrrp->state;
  	vrrp->init_state = old_vrrp->state;
  	vrrp->wantstate = old_vrrp->state;

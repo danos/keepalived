@@ -57,7 +57,7 @@
  #endif
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1540,7 +1540,7 @@
+@@ -1537,7 +1537,7 @@
  }
  
  void
@@ -66,7 +66,7 @@
  {
  	if (VRRP_VIP_ISSET(vrrp)) {
  #ifdef _WITH_LVS_
-@@ -1553,8 +1553,9 @@
+@@ -1550,8 +1550,9 @@
  	/* set the new vrrp state */
  	switch (vrrp->wantstate) {
  	case VRRP_STATE_BACK:
@@ -78,7 +78,7 @@
  		vrrp->state = vrrp->wantstate;
  		notify_instance_exec(vrrp, VRRP_STATE_BACK);
  		vrrp->preempt_time.tv_sec = 0;
-@@ -1563,8 +1564,9 @@
+@@ -1560,8 +1561,9 @@
  #endif
  		break;
  	case VRRP_STATE_GOTO_FAULT:
