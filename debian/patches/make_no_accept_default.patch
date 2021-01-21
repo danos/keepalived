@@ -4,7 +4,7 @@
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2158,9 +2158,16 @@
+@@ -2155,9 +2155,16 @@
  	/* Set default for accept mode if not specified. If we are running in strict mode,
  	 * default is to disable accept mode, otherwise default is to enable it.
  	 * At some point we might want to change this to make non accept_mode the default,

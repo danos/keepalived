@@ -1,10 +1,10 @@
 ---
- keepalived/vrrp/vrrp.c |   60 +++++++++++++++++++++++++++++++++++--------------
- 1 file changed, 44 insertions(+), 16 deletions(-)
+ keepalived/vrrp/vrrp.c |   48 ++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 38 insertions(+), 10 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1350,19 +1350,19 @@
+@@ -1350,8 +1350,8 @@
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_DEL, VRRP_VIP_TYPE);
  		if (!LIST_ISEMPTY(vrrp->evip))
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_DEL, VRRP_EVIP_TYPE);
@@ -15,24 +15,7 @@
  		vrrp_handle_accept_mode(vrrp, IPADDRESS_DEL, force);
  		vrrp->vipset = 0;
  	}
- 
--        if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
--            if (advF) {
--                netlink_link_up(vrrp);
--            } else {
--                netlink_link_down(vrrp);
--            }
-+    if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
-+        if (advF) {
-+            netlink_link_up(vrrp);
-+        } else {
-+            netlink_link_down(vrrp);
-         }
-+    }
- }
- 
- void
-@@ -2133,7 +2133,8 @@
+@@ -2130,7 +2130,8 @@
  					}
  					else
  						strcpy(vrrp->vmac_ifname, ifp->ifname);
@@ -42,7 +25,7 @@
  					vrrp->vmac_ifindex = ifp->ifindex;
  					__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
  
-@@ -2275,8 +2276,13 @@
+@@ -2272,8 +2273,13 @@
  		for (e = LIST_HEAD(vrrp->vip); e; ELEMENT_NEXT(e)) {
  			vip = ELEMENT_DATA(e);
  			if (!vip->ifa.ifa_index) {
@@ -58,7 +41,7 @@
  			}
  		}
  	}
-@@ -2635,8 +2641,8 @@
+@@ -2632,8 +2638,8 @@
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_VIP_TYPE);
  		if (!LIST_ISEMPTY(vrrp->evip))
  			vrrp_handle_ipaddress(vrrp, IPADDRESS_ADD, VRRP_EVIP_TYPE);
@@ -69,7 +52,7 @@
  #ifdef _HAVE_FIB_ROUTING_
  		if (!LIST_ISEMPTY(vrrp->vroutes))
  			vrrp_handle_iproutes(vrrp, IPROUTE_ADD);
-@@ -2646,6 +2652,27 @@
+@@ -2643,6 +2649,27 @@
  	}
  }
  
@@ -97,7 +80,7 @@
  /* Diff when reloading configuration */
  void
  clear_diff_vrrp(void)
-@@ -2695,9 +2722,9 @@
+@@ -2692,9 +2719,9 @@
  #endif
  
  #ifdef _HAVE_VRRP_VMAC_
@@ -110,7 +93,7 @@
  			/*
  			 * Remove VMAC if it existed in old vrrp instance,
  			 * but not the new one.
-@@ -2709,6 +2736,7 @@
+@@ -2706,6 +2733,7 @@
  #endif
  
  			/* reset the state */

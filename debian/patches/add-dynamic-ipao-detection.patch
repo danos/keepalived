@@ -168,7 +168,7 @@
  /* becoming master */
  void
  vrrp_state_become_master(vrrp_t * vrrp)
-@@ -2368,6 +2451,9 @@
+@@ -2365,6 +2448,9 @@
  	l = vrrp_data->vrrp;
  	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
  		vrrp = ELEMENT_DATA(e);
