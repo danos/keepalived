@@ -1,6 +1,10 @@
 ##Vyatta build fix up
 v2_2_20_fixup.patch
 
+##Vyatta get running
+vyatta_if_additions.patch
+vyatta_dbus_rfc_additions.patch
+vyatta_upstream_reversions.patch
 
 ##Recommended critical upstream fix
 #fix_ipv6_always_using_v3
@@ -49,8 +53,3 @@ v2_2_20_fixup.patch
 #add_effective_and_configure_prefix.patch
 #reset_groups_to_backup_on_configured_priority_change.patch
 #add_transition_to_master_timer_expired.patch
-#defer_intf_creation.patch
-
-## CVE fix from upstream
-#security_fix_tmp_files.patch
-#configure_tmp_file_path.patch

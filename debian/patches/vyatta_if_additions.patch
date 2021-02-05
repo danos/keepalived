@@ -1,9 +1,9 @@
 ---
  keepalived/include/vrrp_vyatta_if.h |   39 ++++++++++++++++
- keepalived/vrrp/Makefile.am         |    2 
+ keepalived/vrrp/Makefile.am         |    3 -
  keepalived/vrrp/vrrp_vmac.c         |    2 
  keepalived/vrrp/vrrp_vyatta_if.c    |   86 ++++++++++++++++++++++++++++++++++++
- 4 files changed, 128 insertions(+), 1 deletion(-)
+ 4 files changed, 129 insertions(+), 1 deletion(-)
 
 --- /dev/null
 +++ b/keepalived/include/vrrp_vyatta_if.h
@@ -49,19 +49,19 @@
 +
 --- a/keepalived/vrrp/vrrp_vmac.c
 +++ b/keepalived/vrrp/vrrp_vmac.c
-@@ -30,6 +30,7 @@
+@@ -34,6 +34,7 @@
  
  /* local include */
  #include "vrrp_vmac.h"
 +#include "vrrp_vyatta_if.h"
- #include "vrrp_netlink.h"
- #include "vrrp_data.h"
+ #include "keepalived_netlink.h"
  #include "logger.h"
-@@ -289,6 +290,7 @@
+ #include "bitops.h"
+@@ -412,6 +413,7 @@ netlink_link_add_vmac(vrrp_t *vrrp)
  
  	/* bring it UP ! */
  	__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
-+	vyatta_if_setup(ifname);
++	vyatta_if_setup(vrrp->ifp->ifname);
  	netlink_link_up(vrrp);
  
  #if !HAVE_DECL_IFLA_INET6_ADDR_GEN_MODE
@@ -156,12 +156,13 @@
 +}
 --- a/keepalived/vrrp/Makefile.am
 +++ b/keepalived/vrrp/Makefile.am
-@@ -18,7 +18,7 @@
+@@ -17,7 +17,8 @@ libvrrp_a_SOURCES	= \
  	vrrp_daemon.c vrrp_print.c vrrp_data.c vrrp_parser.c \
- 	vrrp.c vrrp_notify.c vrrp_scheduler.c vrrp_sync.c vrrp_index.c \
- 	vrrp_netlink.c vrrp_arp.c vrrp_if.c vrrp_track.c vrrp_ipaddress.c \
--	vrrp_ndisc.c vrrp_if_config.c
-+	vrrp_ndisc.c vrrp_if_config.c vrrp_vyatta_if.c
- libvrrp_a_SOURCES += ../include/vrrp_daemon.h
+ 	vrrp.c vrrp_notify.c vrrp_scheduler.c vrrp_sync.c \
+ 	vrrp_arp.c vrrp_if.c vrrp_track.c vrrp_ipaddress.c \
+-	vrrp_ndisc.c vrrp_if_config.c vrrp_static_track.c
++	vrrp_ndisc.c vrrp_if_config.c vrrp_static_track.c \
++  vrrp_vyatta_if.c
+ libvrrp_a_SOURCES	+= ../include/vrrp_daemon.h
  
  libvrrp_a_LIBADD	=

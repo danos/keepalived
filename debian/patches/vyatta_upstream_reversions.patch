@@ -1,0 +1,65 @@
+---
+ keepalived/vrrp/vrrp.c        |    4 ++--
+ keepalived/vrrp/vrrp_data.c   |    2 +-
+ keepalived/vrrp/vrrp_parser.c |    5 +++--
+ 3 files changed, 6 insertions(+), 5 deletions(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2813,7 +2813,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
+ 			vrrp->version = VRRP_VERSION_3;
+ 		}
+ 		else if (!vrrp->version)
+-			vrrp->version = VRRP_VERSION_3;
++			vrrp->version = global_data->vrrp_version;
+ 	}
+ 
+ 	/* Default to IPv4. This can only happen if no VIPs are specified. */
+@@ -2826,7 +2826,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
+ 		have_ipv6_instance = true;
+ 
+ 	if (vrrp->version == 0) {
+-		if (vrrp->family == AF_INET6)
++		if (vrrp->family == AF_INET6 && vrrp->strict_mode)
+ 			vrrp->version = VRRP_VERSION_3;
+ 		else
+ 			vrrp->version = global_data->vrrp_version;
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -687,7 +687,6 @@ vrrp_native_ipv6_handler(__attribute__((
+ 	}
+ 
+ 	vrrp->family = AF_INET6;
+-	vrrp->version = VRRP_VERSION_3;
+ }
+ static void
+ vrrp_state_handler(const vector_t *strvec)
+@@ -1668,6 +1667,8 @@ vrrp_version_handler(const vector_t *str
+ {
+ 	vrrp_t *vrrp = list_last_entry(&vrrp_data->vrrp, vrrp_t, e_list);
+ 	int version;
++	bool using_strict = ((vrrp->strict_mode== true|| global_data->vrrp_strict)? \
++			true : false);
+ 
+ 	if (!read_int_strvec(strvec, 1, &version, 2, 3, true)) {
+ 		report_config_error(CONFIG_GENERAL_ERROR, "(%s): Version must be either 2 or 3"
+@@ -1676,7 +1677,7 @@ vrrp_version_handler(const vector_t *str
+ 	}
+ 
+ 	if ((vrrp->version && vrrp->version != version) ||
+-	    (version == VRRP_VERSION_2 && vrrp->family == AF_INET6)) {
++	    (version == VRRP_VERSION_2 && vrrp->family == AF_INET6 && using_strict)) {
+ 		report_config_error(CONFIG_GENERAL_ERROR, "(%s) vrrp_version %d conflicts with configured"
+ 							  " or deduced version %d; ignoring."
+ 							, vrrp->iname, version, vrrp->version);
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -730,7 +730,7 @@ dump_vrrp(FILE *fp, const vrrp_t *vrrp)
+ #endif
+ 
+ 	if (!list_empty(&vrrp->vip)) {
+-		conf_write(fp, "   Virtual IP :");
++		conf_write(fp, "   Virtual IP = %d", vrrp->vip_cnt);
+ 		dump_ipaddress_list(fp, &vrrp->vip);
+ 	}
+ 	if (!list_empty(&vrrp->evip)) {
