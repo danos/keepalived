@@ -1,10 +1,11 @@
 ---
- keepalived/vrrp/vrrp.c |    4 ++++
- 1 file changed, 4 insertions(+)
+ keepalived/vrrp/vrrp.c           |    4 ++++
+ keepalived/vrrp/vrrp_scheduler.c |    6 ++++--
+ 2 files changed, 8 insertions(+), 2 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2958,6 +2958,10 @@
+@@ -2958,6 +2958,10 @@ reset_vrrp_state(vrrp_t *old_vrrp, vrrp_
  	vrrp->state = old_vrrp->state;
  	vrrp->init_state = old_vrrp->state;
  	vrrp->wantstate = old_vrrp->state;
@@ -15,3 +16,26 @@
  	if (!old_vrrp->sync)
  		vrrp->effective_priority = old_vrrp->effective_priority;
  	/* Save old stats */
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -1273,7 +1273,7 @@ vrrp_dispatcher_read(sock_t * sock)
+ 		 * IPAO mode appears as matching one of our own addresses (on the back up)
+ 		 * if the received packet matches our effective priority then it's our packet (most likely)
+ 		 */
+-		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
++		if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
+ 			/* DROP our own packets */
+ 			if (IS_VRRP_DEBUG_PER_PACKET())
+ 				log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
+@@ -1299,8 +1299,10 @@ vrrp_dispatcher_read(sock_t * sock)
+ 		/*
+ 		 * IPAO mode appears as matching one of our own addresses (on the back up)
+ 		 * if the received packet matches our effective priority then it's our packet (most likely)
++		 * On occasion we can pick up our own packet after a restart this can effect when preemption is turned off
++		 * when we've lowered our priority in the restart
+ 		 */
+-		if (our_address && (hd->priority == vrrp->effective_priority || hd->priority == 0)) {
++		if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
+ 			/* DROP our own packets */
+ 			if (IS_VRRP_DEBUG_PER_PACKET())
+ 				log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
