@@ -1,3 +1,9 @@
+keepalived (2.2.0-vyatta0.2) unstable; urgency=medium
+
+  * Bugfix/minimum changes to run acceptance tests
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Thu, 11 Feb 2021 11:41:39 +0000
+
 keepalived (2.2.0-vyatta0.1) unstable; urgency=medium
 
   [ Masaya Yamamoto ]
