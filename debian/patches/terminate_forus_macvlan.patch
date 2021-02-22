@@ -1,10 +1,7 @@
 ---
- keepalived/core/global_data.c    |    8 +
- keepalived/include/global_data.h |    2 
  keepalived/vrrp/vrrp.c           |  254 ++++++++++++++++++++++++++++++++-------
- keepalived/vrrp/vrrp_netlink.c   |    8 +
  keepalived/vrrp/vrrp_scheduler.c |  165 +++++++++++++++++++++++--
- 5 files changed, 388 insertions(+), 49 deletions(-)
+ 2 files changed, 370 insertions(+), 49 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
@@ -149,7 +146,7 @@
  	return sendmsg(vrrp->fd_out, &msg, (addr) ? 0 : MSG_DONTROUTE);
  }
  
-@@ -1680,8 +1763,10 @@
+@@ -1706,8 +1789,10 @@
  
  	addr_cmp = vrrp_saddr_cmp(&vrrp->pkt_saddr, vrrp);
  
@@ -162,7 +159,7 @@
  
  	if (hd->priority < vrrp->effective_priority ||
  		   (hd->priority == vrrp->effective_priority &&
-@@ -1862,46 +1947,135 @@
+@@ -1888,46 +1973,135 @@
  {
  	interface_t *ifp;
  	int fd = -1;
@@ -344,7 +341,7 @@
  
  /* global vars */
  timeval_t garp_next_time;
-@@ -538,6 +540,10 @@
+@@ -536,6 +538,10 @@
  		else
  			sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
  							     sock->xmit_ifindex, sock->unicast);
@@ -355,7 +352,7 @@
  	}
  }
  
-@@ -1044,38 +1050,179 @@
+@@ -1042,38 +1048,179 @@
  	return vrrp->fd_in;
  }
  
@@ -544,69 +541,3 @@
  
  	/* handle instance synchronization */
  //	printf("Read [%s] TSM transtition : [%d,%d] Wantstate = [%d]\n"
---- a/keepalived/core/global_data.c
-+++ b/keepalived/core/global_data.c
-@@ -176,6 +176,8 @@
- 	new->lvs_syncd.mcast_group.ss_family = AF_UNSPEC;
- #endif
- #endif
-+	new->local_addresses = NULL;
-+	getifaddrs(&(new->local_addresses));
- 
- 	return new;
- }
-@@ -215,6 +217,12 @@
- void
- free_global_data(data_t * data)
- {
-+	if (data == NULL)
-+		return;
-+	if (data->local_addresses != NULL) {
-+		freeifaddrs(data->local_addresses);
-+		data->local_addresses = NULL;
-+	}
- 	free_list(&data->email);
- 	FREE_PTR(data->router_id);
- 	FREE_PTR(data->email_from);
---- a/keepalived/include/global_data.h
-+++ b/keepalived/include/global_data.h
-@@ -29,6 +29,7 @@
- #include <stdint.h>
- #include <sys/socket.h>
- #include <stdbool.h>
-+#include <ifaddrs.h>
- 
- #ifdef HAVE_LINUX_NETFILTER_X_TABLES_H
- #include <linux/netfilter/x_tables.h>
-@@ -106,6 +107,7 @@
- 	bool				vrrp_strict;
- 	char				vrrp_process_priority;
- 	bool				vrrp_no_swap;
-+	struct ifaddrs 		*local_addresses;
- #endif
- #ifdef _WITH_LVS_
- 	char				checker_process_priority;
---- a/keepalived/vrrp/vrrp_netlink.c
-+++ b/keepalived/vrrp/vrrp_netlink.c
-@@ -40,6 +40,7 @@
- /* local include */
- #include "check_api.h"
- #include "vrrp_netlink.h"
-+#include "global_data.h"
- #ifdef _HAVE_VRRP_VMAC_
- #include "vrrp_vmac.h"
- #endif
-@@ -545,6 +546,13 @@
- 	update_checker_activity(ifa->ifa_family, addr,
- 				(h->nlmsg_type == RTM_NEWADDR) ? 1 : 0);
- #endif
-+	if (NULL != global_data) {
-+		if (NULL != global_data->local_addresses) {
-+			freeifaddrs(global_data->local_addresses);
-+			global_data->local_addresses = NULL;
-+		}
-+		getifaddrs(&(global_data->local_addresses));
-+	}
- 	return 0;
- }
- 

@@ -1,0 +1,231 @@
+Update temporary file storage to be configurable
+
+As /tmp/ can be a security issue (CVE-2018-19044/19045/19046)
+allow temporary file storage to be configurable.
+The default storage will still be /tmp/ but a new directory
+in the global section can be configured using the tmp_file_path keyword.
+Keepalived will create and delete this directory.
+
+Signed-off-by:Anthony Dempsey, anthonyjdempsey@gmail.com
+
+---
+ keepalived/core/global_data.c                          |   36 +++++++++++++++++
+ keepalived/core/global_parser.c                        |   24 +++++++++++
+ keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template |    4 -
+ keepalived/include/global_data.h                       |    1 
+ keepalived/vrrp/vrrp_print.c                           |   26 ++++++++----
+ 5 files changed, 81 insertions(+), 10 deletions(-)
+
+--- a/keepalived/core/global_data.c
++++ b/keepalived/core/global_data.c
+@@ -26,6 +26,7 @@
+ #include <unistd.h>
+ #include <pwd.h>
+ #include <netdb.h>
++#include <ftw.h>
+ #include "global_data.h"
+ #include "memory.h"
+ #include "list.h"
+@@ -75,6 +76,16 @@
+ 	data->smtp_connection_to = DEFAULT_SMTP_CONNECTION_TIMEOUT;
+ }
+ 
++static void
++set_default_tmp_file_path(data_t * data)
++{
++	char file_path[] = "/tmp/";
++
++	global_data->tmp_path = MALLOC(strlen(file_path) + 1);
++	memset(global_data->tmp_path, '\0', strlen(file_path) + 1);
++	strncpy(global_data->tmp_path, file_path, strlen(file_path));
++}
++
+ #ifdef _WITH_VRRP_
+ static void
+ set_default_mcast_group(data_t * data)
+@@ -227,6 +238,19 @@
+ 	}
+ 
+ 	FREE_PTR(local_name);
++	if (data->tmp_path == NULL)
++		set_default_tmp_file_path(data);
++}
++
++static int
++unlink_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf)
++{
++	int rv = remove(fpath);
++
++	if (rv)
++		perror(fpath);
++
++	return rv;
+ }
+ 
+ void
+@@ -242,6 +266,16 @@
+ 	FREE_PTR(data->router_id);
+ 	FREE_PTR(data->email_from);
+ 	FREE_PTR(data->smtp_helo_name);
++	if (strcmp(data->tmp_path, "/tmp/") != 0) {
++		log_message(LOG_INFO, "Attempting to remove configured temp directory: %s", data->tmp_path);
++		int status = nftw(data->tmp_path, unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
++		if (status != 0)
++			log_message(LOG_NOTICE, "Failed to remove tmp path %s", data->tmp_path);
++		else
++			log_message(LOG_INFO, "Succeeded in removing configured temp directory: %s", data->tmp_path);
++		
++	}
++	FREE_PTR(data->tmp_path);
+ #ifdef _WITH_SNMP_
+ 	FREE_PTR(data->snmp_socket);
+ #endif
+@@ -281,6 +315,8 @@
+ 				    , data->email_from);
+ 		dump_list(data->email);
+ 	}
++	if (data->tmp_path)
++		log_message(LOG_INFO, " Temporary files being written to = %s", data->tmp_path);
+ 	log_message(LOG_INFO, " Default interface = %s", data->default_ifp ? data->default_ifp->ifname : DFLT_INT);
+ #ifdef _WITH_LVS_
+ 	if (data->lvs_tcp_timeout)
+--- a/keepalived/core/global_parser.c
++++ b/keepalived/core/global_parser.c
+@@ -41,6 +41,9 @@
+ #include "smtp.h"
+ #include "utils.h"
+ #include "logger.h"
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
+ #if HAVE_DECL_CLONE_NEWNET
+ #include "namespaces.h"
+@@ -119,6 +122,26 @@
+ 
+ 	free_strvec(email_vec);
+ }
++static void
++file_path_handler(vector_t *strvec)
++{
++	char *file_path;
++
++	if (vector_size(strvec) < 2) {
++		log_message(LOG_INFO, "Temporary ile path configured but no path given.");
++		return;
++	}
++	file_path = MALLOC(strlen(vector_slot(strvec, 1)) + 1);
++	if (!file_path)
++		return;
++	strncpy(file_path, vector_slot(strvec, 1), strlen(vector_slot(strvec, 1)));
++	global_data->tmp_path = file_path;
++	struct stat st = {0};
++
++	if (stat(file_path, &st) == -1) {
++		mkdir(file_path, 0700);
++	}
++}
+ #ifdef _WITH_VRRP_
+ static void
+ default_interface_handler(vector_t *strvec)
+@@ -700,6 +723,7 @@
+ 	install_keyword("smtp_helo_name", &smtphelo_handler);
+ 	install_keyword("smtp_connect_timeout", &smtpto_handler);
+ 	install_keyword("notification_email", &email_handler);
++	install_keyword("tmp_file_path", &file_path_handler);
+ #ifdef _WITH_VRRP_
+ 	install_keyword("default_interface", &default_interface_handler);
+ #endif
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
+@@ -13,7 +13,7 @@
+ 	  PrintData:
+ 
+ 	  Signals VRRP process to print contents of vrrp_data
+-	  in file /tmp/keepalived.data
++	  in file keepalived.data
+ 	-->
+ 	<method name='PrintData'>
+ 	</method>
+@@ -21,7 +21,7 @@
+ 	  PrintStats:
+ 
+ 	  Signals VRRP process to print stats in file
+-	  /tmp/keepalived.stats
++	  keepalived.stats
+ 	-->
+ 	<method name='PrintStats'>
+ 	</method>
+--- a/keepalived/include/global_data.h
++++ b/keepalived/include/global_data.h
+@@ -69,6 +69,7 @@
+ 	char				*smtp_helo_name;
+ 	unsigned long			smtp_connection_to;
+ 	list				email;
++	char				*tmp_path;
+ 	interface_t			*default_ifp;		/* Default interface for static addresses */
+ #ifdef _WITH_LVS_
+ 	int				lvs_tcp_timeout;
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -42,6 +42,7 @@
+ #include "vrrp_if.h"
+ #include "bitops.h"
+ #endif
++#include "global_data.h"
+ 
+ #include <time.h>
+ #include <errno.h>
+@@ -119,7 +120,7 @@
+  * Print the path monitor tracking information to a file.
+  * file - The file to write to.
+  * data - Pointer to a tracked_pathmon_t structure.
+- * (This is used in the generation of the /tmp/keepalived.data file.)
++ * (This is used in the generation of the keepalived.data file.)
+  * A policy can be in one of three states:
+  * Non compliant (state 0)
+  * Compliant (state 1)
+@@ -439,11 +440,16 @@
+ vrrp_print_data(void)
+ {
+ 	FILE *file;
+-	file = fopen_safe ("/tmp/keepalived.data","w");
++	char filename[] = "keepalived.data";
++	char fullpath[strlen(global_data->tmp_path)+strlen(filename)+1];
++	memset(fullpath, '\0', strlen(fullpath));
++	strncat(fullpath, global_data->tmp_path, strlen(global_data->tmp_path));
++	strncat(fullpath, filename, strlen(filename));
++	file = fopen_safe (fullpath, "w");
+ 
+ 	if (!file) {
+-		log_message(LOG_INFO, "Can't open /tmp/keepalived.data (%d: %s)",
+-			errno, strerror(errno));
++		log_message(LOG_INFO, "Can't open %s (%d: %s)",
++			fullpath, errno, strerror(errno));
+ 		return;
+ 	}
+ 
+@@ -463,15 +469,19 @@
+ vrrp_print_stats(void)
+ {
+ 	FILE *file;
+-	file = fopen_safe ("/tmp/keepalived.stats","w");
++	char filename[] = "keepalived.stats";
++	char fullpath[strlen(global_data->tmp_path)+strlen(filename)+1];
++	memset(fullpath, '\0', strlen(fullpath));
++	strncat(fullpath, global_data->tmp_path, strlen(global_data->tmp_path));
++	strncat(fullpath, filename, strlen(filename));
++	file = fopen_safe (fullpath, "w");
+ 
+ 	if (!file) {
+-		log_message(LOG_INFO, "Can't open /tmp/keepalived.stats (%d: %s)",
+-			errno, strerror(errno));
++		log_message(LOG_INFO, "Can't open %s (%d: %s)",
++			fullpath, errno, strerror(errno));
+ 		return;
+ 	}
+ 
+-
+ 	list l = vrrp_data->vrrp;
+ 	element e;
+ 	vrrp_t *vrrp;

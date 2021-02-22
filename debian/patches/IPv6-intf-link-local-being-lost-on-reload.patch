@@ -1,9 +1,9 @@
 ---
  keepalived/include/vrrp.h      |    2 +-
- keepalived/vrrp/vrrp.c         |   10 +++++++---
+ keepalived/vrrp/vrrp.c         |   12 ++++++++----
  keepalived/vrrp/vrrp_daemon.c  |   35 +++++++++++++++++++++++++++++++++++
  keepalived/vrrp/vrrp_netlink.c |   17 +++++++----------
- 4 files changed, 50 insertions(+), 14 deletions(-)
+ 4 files changed, 51 insertions(+), 15 deletions(-)
 
 --- a/keepalived/include/vrrp.h
 +++ b/keepalived/include/vrrp.h
@@ -16,16 +16,18 @@
  #endif
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1303,7 +1303,8 @@
+@@ -1302,8 +1302,9 @@
+ 
  	for (ifa = global_data->local_addresses; ifa != NULL; ifa = ifa->ifa_next) {
  		if (ifa->ifa_addr == NULL ||
- 				ifa->ifa_addr->sa_family != AF_INET6 ||
+-				ifa->ifa_addr->sa_family != AF_INET ||
 -				strncmp(if_name, ifa->ifa_name, IF_NAMESIZE) != 0)
++				ifa->ifa_addr->sa_family != AF_INET6 ||
 +				strncmp(if_name, ifa->ifa_name, IF_NAMESIZE) != 0 ||
 +				IN6_IS_ADDR_LINKLOCAL(&(((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr)))
  			continue;
- 		if (inet_inaddrcmp(vip->ifa.ifa_family,
- 				&(vip->u.sin6_addr),
+ 		if(inet_inaddrcmp(vip->ifa.ifa_family,
+ 						&(vip->u.sin6_addr),
 @@ -1316,7 +1317,7 @@
  	return match;
  }

@@ -1,12 +1,12 @@
 ---
  keepalived/vrrp/vrrp.c           |    4 ++--
  keepalived/vrrp/vrrp_scheduler.c |   32 +++++++++++++++++++++++++++++---
- keepalived/vrrp/vrrp_sync.c      |   26 ++++++++++++++++++--------
- 3 files changed, 49 insertions(+), 13 deletions(-)
+ keepalived/vrrp/vrrp_sync.c      |   38 ++++++++++++++++++++++++++++++--------
+ 3 files changed, 61 insertions(+), 13 deletions(-)
 
 --- a/keepalived/vrrp/vrrp_scheduler.c
 +++ b/keepalived/vrrp/vrrp_scheduler.c
-@@ -701,13 +701,32 @@
+@@ -699,13 +699,32 @@
  static void
  vrrp_leave_master(vrrp_t * vrrp, char *buffer, ssize_t len)
  {
@@ -42,7 +42,7 @@
  	}
  }
  
-@@ -799,6 +818,13 @@
+@@ -797,6 +816,13 @@
  	/* handle master state transition */
  	vrrp->wantstate = VRRP_STATE_MAST;
  	vrrp_state_goto_master(vrrp);
@@ -58,7 +58,7 @@
  /* Delayed gratuitous ARP thread */
 --- a/keepalived/vrrp/vrrp_sync.c
 +++ b/keepalived/vrrp/vrrp_sync.c
-@@ -38,18 +38,28 @@
+@@ -38,18 +38,40 @@
  {
  	set_time_now();
  
@@ -70,34 +70,46 @@
 -// i) backup and expire timer
 -// ii) backup and receive prio 0
 -// iii) master and receive higher prio advert
-+        /*
-+         * When in MASTER state the expiry time for the group controls when
-+         * advertisements are transmitted.
-+         * As such, sets the expiry to one advertisement interval from now
-+         */
-+        if (vrrp->state == VRRP_STATE_MAST) {
++	/*
++	 * If a VRRP group has not had it's sands timers initialised the set
++	 * those timers to the value of time_now.
++	 */
++	if (timer_isnull(vrrp->sands)) {
++		vrrp->sands = timer_dup(time_now);
++
++		/* Continue to see what necessary adjustments are required
++		 * to this instance based on it's state
++		 */
++	}
++
++	/*
++	 * When in MASTER state the expiry time for the group controls when
++	 * advertisements are transmitted.
++	 * As such, sets the expiry to one advertisement interval from now
++	 */
++	if (vrrp->state == VRRP_STATE_MAST) {
  		vrrp->sands = timer_add_long(time_now, vrrp->adver_int);
  		return;
  	}
  
-+        /*
-+         * When not in MASTER state, but transitioning to MASTER state (e.g
-+         * wantstate is GOTO_MASTER, which occurs when a preemptable packet is
-+         * received), the timer should not be updated to allow the Master Down
-+         * Timer to expire.
-+         */
-+        if (vrrp->state == VRRP_STATE_GOTO_MASTER ||
-+                vrrp->state == VRRP_STATE_GOTO_FAULT ||
-+                vrrp->wantstate == VRRP_STATE_GOTO_MASTER) {
-+            return;
-+        }
++	/*
++	 * When not in MASTER state, but transitioning to MASTER state (e.g
++	 * wantstate is GOTO_MASTER, which occurs when a preemptable packet is
++	 * received), the timer should not be updated to allow the Master Down
++	 * Timer to expire.
++	 */
++	if (vrrp->state == VRRP_STATE_GOTO_MASTER ||
++			vrrp->state == VRRP_STATE_GOTO_FAULT ||
++			vrrp->wantstate == VRRP_STATE_GOTO_MASTER) {
++		return;
++	}
 +
  	/*
  	 * When in the BACKUP state the expiry timer should be updated to
  	 * time_now plus the Master Down Timer, when a non-preemptable packet is
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1429,7 +1429,7 @@
+@@ -1423,7 +1423,7 @@
  	}
  	ret = vrrp_check_packet(vrrp, buf, buflen, check_addr);
  
@@ -106,7 +118,7 @@
  		log_message(LOG_INFO, "VRRP_Instance(%s) ignoring received advertisment..."
  				    ,  vrrp->iname);
  		if (vrrp->version == VRRP_VERSION_3)
-@@ -1568,7 +1568,7 @@
+@@ -1573,7 +1573,7 @@
  		log_message(LOG_INFO,
  		       "VRRP_Instance(%s) Dropping received VRRP packet...",
  		       vrrp->iname);

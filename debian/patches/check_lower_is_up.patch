@@ -57,7 +57,7 @@
  
 +	if (tb[IFLA_CARRIER]) {
 +		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
-+		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, ifp->carrier_is_up);
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
 +	} else {
 +		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
 +		ifp->carrier_is_up = 1;
@@ -71,7 +71,7 @@
  		}
 +		if (tb[IFLA_CARRIER]) {
 +			ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
-+			log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, ifp->carrier_is_up);
++			log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
 +		} else {
 +			log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
 +			ifp->carrier_is_up = 1;
@@ -111,7 +111,7 @@
 -
 +	if (tb[IFLA_CARRIER]) {
 +		ifp->carrier_is_up = *(uint32_t *)RTA_DATA(tb[IFLA_CARRIER]);
-+		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, ifp->carrier_is_up);
++		log_message(LOG_DEBUG, "IFLA_CARRIER present for interface %s and the value is %d", name, (ifp->carrier_is_up? "UP" : "DOWN"));
 +	} else {
 +		log_message(LOG_DEBUG, "IFLA_CARRIER not present for interface %s setting it to true", name);
 +		ifp->carrier_is_up = 1;

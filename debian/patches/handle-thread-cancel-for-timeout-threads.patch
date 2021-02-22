@@ -1,10 +1,10 @@
 ---
- lib/scheduler.c |    4 ++++
- 1 file changed, 4 insertions(+)
+ lib/scheduler.c |   11 +++++++++++
+ 1 file changed, 11 insertions(+)
 
 --- a/lib/scheduler.c
 +++ b/lib/scheduler.c
-@@ -495,9 +495,13 @@
+@@ -495,9 +495,20 @@
  		break;
  	case THREAD_READY:
  	case THREAD_READY_FD:
@@ -15,6 +15,13 @@
  	default:
 +		log_message(LOG_INFO, "Cancel of unhandled type %d",
 +				      thread->type);
++		/*
++		 * Unused threads are already on the unused list, adding them
++		 * for a second time will corrupt the list.
++		 */
++		if (thread->type == THREAD_UNUSED)
++			return;
++
  		break;
  	}
  

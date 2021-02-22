@@ -249,7 +249,7 @@
  		vrrp_print_list(file, vrrp->vip, &address_print);
 --- a/keepalived/vrrp/vrrp_scheduler.c
 +++ b/keepalived/vrrp/vrrp_scheduler.c
-@@ -885,6 +885,10 @@
+@@ -883,6 +883,10 @@
  	if (!LIST_ISEMPTY(vrrp->track_script))
  		prio_offset += vrrp_script_weight(vrrp->track_script);
  
