@@ -5,6 +5,7 @@ v2_2_20_fixup.patch
 vyatta_if_additions.patch
 vyatta_dbus_rfc_additions.patch
 vyatta_upstream_reversions.patch
+vyatta_rfc_changes.patch
 
 ##Recommended critical upstream fix
 #fix_ipv6_always_using_v3

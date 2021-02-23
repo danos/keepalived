@@ -1,0 +1,152 @@
+---
+ keepalived/include/vrrp_if.h   |    2 +-
+ keepalived/include/vrrp_vmac.h |    2 ++
+ keepalived/vrrp/vrrp.c         |   25 +++++++++++++++++++++++--
+ keepalived/vrrp/vrrp_track.c   |    4 ++--
+ keepalived/vrrp/vrrp_vmac.c    |   31 ++++++++++++++++++++++++++++---
+ 5 files changed, 56 insertions(+), 8 deletions(-)
+
+--- a/keepalived/include/vrrp_vmac.h
++++ b/keepalived/include/vrrp_vmac.h
+@@ -59,6 +59,8 @@ extern void remove_vmac_auto_gen_addr(in
+ #endif
+ extern bool netlink_link_add_vmac(vrrp_t *);
+ extern void netlink_link_del_vmac(vrrp_t *);
++extern int netlink_link_up(vrrp_t *);
++extern int netlink_link_down(vrrp_t *);
+ #ifdef _HAVE_VRRP_IPVLAN_
+ extern bool netlink_link_add_ipvlan(vrrp_t *);
+ #endif
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -1665,6 +1665,14 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
+ static void
+ vrrp_state_become_master(vrrp_t * vrrp)
+ {
++
++#ifdef _HAVE_VRRP_VMAC_
++	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)){
++		__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
++		netlink_link_up(vrrp);
++	}
++#endif
++
+ 	++vrrp->stats->become_master;
+ 
+ 	if (vrrp->version == VRRP_VERSION_3 &&
+@@ -1807,6 +1815,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
+ 	}
+ #endif
+ 
++#ifdef _HAVE_VRRP_VMAC_
++	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++		__clear_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
++		netlink_link_down(vrrp);
++	}
++#endif
++
+ 	/* set the new vrrp state */
+ 	if (vrrp->wantstate == VRRP_STATE_BACK) {
+ 		log_message(LOG_INFO, "(%s) Entering BACKUP STATE", vrrp->iname);
+@@ -1837,9 +1852,15 @@ void
+ vrrp_state_leave_fault(vrrp_t * vrrp)
+ {
+ 	/* set the new vrrp state */
+-	if (vrrp->wantstate == VRRP_STATE_MAST)
++	if (vrrp->wantstate == VRRP_STATE_MAST) {
++#ifdef _HAVE_VRRP_VMAC_
++		if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)){
++			__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
++			netlink_link_up(vrrp);
++		}
++#endif
+ 		vrrp_state_goto_master(vrrp);
+-	else {
++	} else {
+ 		if (vrrp->state != vrrp->wantstate)
+ 			log_message(LOG_INFO, "(%s) Entering %s STATE", vrrp->iname, vrrp->wantstate == VRRP_STATE_BACK ? "BACKUP" : "FAULT");
+ 		if (vrrp->wantstate == VRRP_STATE_FAULT && vrrp->state == VRRP_STATE_MAST) {
+--- a/keepalived/vrrp/vrrp_vmac.c
++++ b/keepalived/vrrp/vrrp_vmac.c
+@@ -164,7 +164,7 @@ remove_vmac_auto_gen_addr(interface_t *i
+ }
+ #endif
+ 
+-static int
++int
+ netlink_link_up(vrrp_t *vrrp)
+ {
+ 	int status = 1;
+@@ -189,6 +189,31 @@ netlink_link_up(vrrp_t *vrrp)
+ 	return status;
+ }
+ 
++int
++netlink_link_down(vrrp_t *vrrp)
++{
++	int status = 1;
++	struct {
++		struct nlmsghdr n;
++		struct ifinfomsg ifi;
++	} req;
++
++	memset(&req, 0, sizeof (req));
++
++	req.n.nlmsg_len = NLMSG_LENGTH(sizeof (struct ifinfomsg));
++	req.n.nlmsg_flags = NLM_F_REQUEST;
++	req.n.nlmsg_type = RTM_NEWLINK;
++	req.ifi.ifi_family = AF_UNSPEC;
++	req.ifi.ifi_index = (int)IF_INDEX(vrrp->ifp);
++	req.ifi.ifi_change |= IFF_UP;
++	req.ifi.ifi_flags &= ~IFF_UP;
++
++	if (netlink_talk(&nl_cmd, &req.n) < 0)
++		status = -1;
++
++	return status;
++}
++
+ bool
+ netlink_link_add_vmac(vrrp_t *vrrp)
+ {
+@@ -412,9 +437,9 @@ netlink_link_add_vmac(vrrp_t *vrrp)
+ #endif
+ 
+ 	/* bring it UP ! */
+-	__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
++	// __set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
+ 	vyatta_if_setup(vrrp->ifp->ifname);
+-	netlink_link_up(vrrp);
++	// netlink_link_up(vrrp);
+ 
+ #if !HAVE_DECL_IFLA_INET6_ADDR_GEN_MODE
+ 	if (vrrp->family == AF_INET6 || vrrp->evip_other_family) {
+--- a/keepalived/include/vrrp_if.h
++++ b/keepalived/include/vrrp_if.h
+@@ -207,7 +207,7 @@ typedef struct _tracked_if {
+ #define FLAGS_UP(X) (((X) & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING))
+ #define IF_FLAGS_UP(X) (FLAGS_UP((X)->ifi_flags))
+ #ifdef _HAVE_VRRP_VMAC_
+-#define IF_ISUP(X) (IF_FLAGS_UP(X) && (!(X)->vmac_type || IF_FLAGS_UP((X)->base_ifp)))
++#define IF_ISUP(X) ((X)->if_type == IF_TYPE_MACVLAN? IF_FLAGS_UP((X)->base_ifp):IF_FLAGS_UP(X))
+ #else
+ #define IF_ISUP(X) (IF_FLAGS_UP(X))
+ #endif
+--- a/keepalived/vrrp/vrrp_track.c
++++ b/keepalived/vrrp/vrrp_track.c
+@@ -724,13 +724,13 @@ initialise_interface_tracking_priorities
+ 				continue;
+ 
+ 			if (!top->weight) {
+-				if (IF_FLAGS_UP(ifp) != (top->weight_multiplier == 1)) {
++				if (IF_ISUP(ifp) != (top->weight_multiplier == 1)) {
+ 					/* The instance is down */
+ 					log_message(LOG_INFO, "(%s): entering FAULT state (interface %s down)", vrrp->iname, ifp->ifname);
+ 					vrrp->state = VRRP_STATE_FAULT;
+ 					vrrp->num_script_if_fault++;
+ 				}
+-			} else if (IF_FLAGS_UP(ifp)) {
++			} else if (IF_ISUP(ifp)) {
+ 				if (top->weight > 0)
+ 					vrrp->total_priority += top->weight * top->weight_multiplier;
+ 			} else {
