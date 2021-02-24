@@ -1,10 +1,58 @@
+Bugfix/Apply BPF to interface to receive VRRP adv
+
+Background to this change:
+
+Keepalived vanilla behaviour for created RFC interfaces is to send and
+receive VRRP advertisements on this interface, or to send VRRP packets
+from the base interface if use_xmit_base is configured. Sending and
+receiving on an RFC interface is accomplished by having the interface
+created and u/u (UP) on all routers in the VRRP group and installing the
+Virtual Internet Protocol addresses (VIPs) on the Router that is acting
+as the MASTER. BACKUP groups can receive the advertisements because the
+interface is u/u and the interface has joined the VRRP Multicast Group,
+this keeps the VRRP Finite State Machine (FSM) working as intended.
+
+At the same time Vyatta expects the VRRP RFC interface to be A/D when
+the router is in the BACKUP state of the VRRP FSM. When the interface is
+A/D no advertisements are received so BACKUP routers transition to
+MASTER then receive an advertisement and transition to BACKUP then
+receive no advertisements and... This leads to a lot of state flipping.
+
+Previous iterations of the Vyatta code used specific interface types and
+would require a kernel change for upstream to take while also abusing
+the use_xmit_base functionality (should really have been use_recv_base).
+The specific interface type was removed thanks to the use of a Berkley
+Packet Filter (BPF). This BPF is attached to the base interface on the
+read socket and VRRP advertisements received there are passed to the
+VRRP group, allowing the BACKUP routers to receive packets but to remain
+A/D.
+
+What this change does:
+This commit updates the patch used to create the Vyatta specific
+interface behaviour for the keepalived v2.2.0 release:
+ * Dropped the need for use_xmit_base as it was confusing and we can get
+   everything we need from the configured_ifp using the
+   IF_BASE_IFP/IF_BASE_INDEX macros.
+ * Added a function to bring a VMAC interface down via netlink.
+ * Exposed this netlink down and the existing netlink up function in the
+   vrrp_vmac header file.
+ * Created the BPF and rewrote open_vrrp_read_socket() to use this instead
+   of the upstream methodology.
+ * Removed flags to recvmsg() the given ones cause an invalid argument
+   error
+ * Added further cmsg options when reading a packet from a socket.
+     The BPF picks up packets that come from us as well so we should
+     ignore them and any packets with a vlan tag.
+     The packets sent to a VIF interface have the vlan tag stripped.
+
 ---
- keepalived/include/vrrp_if.h   |    2 +-
- keepalived/include/vrrp_vmac.h |    2 ++
- keepalived/vrrp/vrrp.c         |   25 +++++++++++++++++++++++--
- keepalived/vrrp/vrrp_track.c   |    4 ++--
- keepalived/vrrp/vrrp_vmac.c    |   31 ++++++++++++++++++++++++++++---
- 5 files changed, 56 insertions(+), 8 deletions(-)
+ keepalived/include/vrrp_if.h     |    2 
+ keepalived/include/vrrp_vmac.h   |    2 
+ keepalived/vrrp/vrrp.c           |  311 ++++++++++++++++++++++++++++++---------
+ keepalived/vrrp/vrrp_scheduler.c |  137 ++++++++++++++++-
+ keepalived/vrrp/vrrp_track.c     |    4 
+ keepalived/vrrp/vrrp_vmac.c      |   31 +++
+ 6 files changed, 401 insertions(+), 86 deletions(-)
 
 --- a/keepalived/include/vrrp_vmac.h
 +++ b/keepalived/include/vrrp_vmac.h
@@ -19,7 +67,135 @@
  #endif
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -1665,6 +1665,14 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
+@@ -39,6 +39,11 @@
+ #include <stdint.h>
+ #include <net/if_arp.h>
+ #include <net/ethernet.h>
++#include <linux/filter.h>
++#include <linux/if_packet.h>
++#include <linux/if_ether.h>
++#include <sys/socket.h>
++#include <sys/ioctl.h>
+ #ifdef _NETWORK_TIMESTAMP_
+ #include <linux/net_tstamp.h>
+ #endif
+@@ -93,6 +98,72 @@
+ #include "ipvswrapper.h"
+ #endif
+ 
++/* VRRP IPv4 Multicast MAC */
++unsigned char ipv4_mcast_mac[6] =
++	{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0x12 };
++
++/* VRRP IPv6 Multicast MAC */
++unsigned char ipv6_mcast_mac[6] =
++	{ 0x33, 0x33, 0x00, 0x00, 0x00, 0x12 };
++
++/*
++ * Berkeley Packet Filter for VRRP IPv4 Multicast MAC
++ * - Used for filtering VRRP multicast dMAC from RAW
++ *   interface socket.
++ *   https://www.kernel.org/doc/Documentation/networking/filter.txt
++ * (000) ld       [8]
++ * (001) jeq      #0x5e000012      jt 2    jf 4
++ * (002) ldh      [6]
++ * (003) jeq      #0x100           jt 8    jf 4
++ * (004) ld       [2]
++ * (005) jeq      #0x5e000012      jt 6    jf 9
++ * (006) ldh      [0]
++ * (007) jeq      #0x100           jt 8    jf 9
++ * (008) ret      #262144
++ * (009) ret      #0
++ */
++struct sock_filter ipv4_fcode[] = {
++	{ 0x20, 0, 0, 0x00000008 },
++	{ 0x15, 0, 2, 0x5e000012 },
++	{ 0x28, 0, 0, 0x00000006 },
++	{ 0x15, 4, 0, 0x00000100 },
++	{ 0x20, 0, 0, 0x00000002 },
++	{ 0x15, 0, 3, 0x5e000012 },
++	{ 0x28, 0, 0, 0x00000000 },
++	{ 0x15, 0, 1, 0x00000100 },
++	{ 0x6, 0, 0, 0x00040000 },
++	{ 0x6, 0, 0, 0x00000000 },
++};
++
++/*
++ * Berkeley Packet Filter for VRRP IPv6 Multicast MAC
++ * - Used for filtering VRRP multicast dMAC from RAW
++ *   interface socket.
++ *   https://www.kernel.org/doc/Documentation/networking/filter.txt
++ * (000) ld       [8]
++ * (001) jeq      #0x12            jt 2    jf 4
++ * (002) ldh      [6]
++ * (003) jeq      #0x3333          jt 8    jf 4
++ * (004) ld       [2]
++ * (005) jeq      #0x12            jt 6    jf 9
++ * (006) ldh      [0]
++ * (007) jeq      #0x3333          jt 8    jf 9
++ * (008) ret      #262144
++ * (009) ret      #0
++ */
++struct sock_filter ipv6_fcode[] = {
++	{ 0x20, 0, 0, 0x00000008 },
++	{ 0x15, 0, 2, 0x00000012 },
++	{ 0x28, 0, 0, 0x00000006 },
++	{ 0x15, 4, 0, 0x00003333 },
++	{ 0x20, 0, 0, 0x00000002 },
++	{ 0x15, 0, 3, 0x00000012 },
++	{ 0x28, 0, 0, 0x00000000 },
++	{ 0x15, 0, 1, 0x00003333 },
++	{ 0x6, 0, 0, 0x00040000 },
++	{ 0x6, 0, 0, 0x00000000 },
++};
++
+ /* If we don't have certain configuration, then we can optimise the
+  * resources that keepalived uses. These are cleared by start_vrrp()
+  * in clear_summary_flags() and set in vrrp_complete_instance()
+@@ -320,6 +391,7 @@ const vrrphdr_t *
+ vrrp_get_header(sa_family_t family, const char *buf, size_t len)
+ {
+ 	const struct iphdr *iph;
++	const struct ip6_hdr *ip6h;
+ 
+ 	/* Since the raw sockets only specify IPPROTO_VRRP or (for IPv4)
+ 	 * IPPROTO_AH, it is safe to assume IPPROTO_VRRP if it is not
+@@ -351,13 +423,15 @@ vrrp_get_header(sa_family_t family, cons
+ 	}
+ 
+ 	if (family == AF_INET6) {
++		ip6h = PTR_CAST_CONST(const struct ip6_hdr, buf);
+ 		/* Make sure we have received the full vrrp header */
+-		if (len < sizeof(vrrphdr_t)) {
++		if (len < sizeof(struct ip6_hdr) ||
++			len < sizeof(struct ip6_hdr) + sizeof(vrrphdr_t)) {
+ 			log_message(LOG_INFO, "IPv6 VRRP packet too short - %zu bytes", len);
+ 			return NULL;
+ 		}
+ 
+-		return PTR_CAST_CONST(vrrphdr_t, buf);
++		return PTR_CAST_CONST(vrrphdr_t, (const char *)ip6h + sizeof(struct ip6_hdr));
+ 	}
+ 
+ 	return NULL;
+@@ -1450,6 +1524,7 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
+ 	struct iovec iov;
+ 	char cbuf[256] __attribute__((aligned(__alignof__(struct cmsghdr))));
+ 
++	log_message(LOG_INFO, "VRRP_Instance(%s) Send Advertisement", vrrp->iname);
+ 	/* Build the message data */
+ 	memset(&msg, 0, sizeof(msg));
+ 	msg.msg_iov = &iov;
+@@ -1483,6 +1558,8 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
+ 		check_tx_checksum(vrrp, peer);
+ #endif
+ 
++	if (vrrp->sockets->fd_in == -1)
++		log_message(LOG_ERR, "VRRP_Instance(%s) Send socket invalid!", vrrp->iname);
+ 	/* Send the packet */
+ 	return sendmsg(vrrp->sockets->fd_out, &msg, (peer) ? 0 : MSG_DONTROUTE);
+ }
+@@ -1665,6 +1742,14 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
  static void
  vrrp_state_become_master(vrrp_t * vrrp)
  {
@@ -34,7 +210,7 @@
  	++vrrp->stats->become_master;
  
  	if (vrrp->version == VRRP_VERSION_3 &&
-@@ -1807,6 +1815,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
+@@ -1807,6 +1892,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
  	}
  #endif
  
@@ -48,7 +224,7 @@
  	/* set the new vrrp state */
  	if (vrrp->wantstate == VRRP_STATE_BACK) {
  		log_message(LOG_INFO, "(%s) Entering BACKUP STATE", vrrp->iname);
-@@ -1837,9 +1852,15 @@ void
+@@ -1837,9 +1929,15 @@ void
  vrrp_state_leave_fault(vrrp_t * vrrp)
  {
  	/* set the new vrrp state */
@@ -66,6 +242,261 @@
  		if (vrrp->state != vrrp->wantstate)
  			log_message(LOG_INFO, "(%s) Entering %s STATE", vrrp->iname, vrrp->wantstate == VRRP_STATE_BACK ? "BACKUP" : "FAULT");
  		if (vrrp->wantstate == VRRP_STATE_FAULT && vrrp->state == VRRP_STATE_MAST) {
+@@ -2080,7 +2178,7 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
+ 
+ 	if (hd->priority == vrrp->effective_priority) {
+ 		if (addr_cmp == 0)
+-			log_message(LOG_INFO, "(%s) WARNING - equal priority advert received from remote host with our IP address.", vrrp->iname);
++			log_message(LOG_INFO, "(%s) WARNING (DROPPING) - equal priority advert received from remote host with our IP address.", vrrp->iname);
+ 		else if (vrrp->effective_priority == VRRP_PRIO_OWNER) {
+ 			/* If we are configured as the address owner (priority == 255), and we receive an advertisement
+ 			 * from another system indicating it is also the address owner, then there is a clear conflict.
+@@ -2366,16 +2464,44 @@ open_vrrp_read_socket(sa_family_t family
+ 	int fd = -1;
+ 	int val = rx_buf_size;
+ 	socklen_t len = sizeof(val);
+-	int on = 1;
+-	struct sockaddr_in6 loopback6 = { .sin6_family = AF_INET6, .sin6_addr = IN6ADDR_LOOPBACK_INIT };	// ::1
++	int sockopt;
++	int auxopt;
++	struct ifreq ifopts;
++	struct packet_mreq pmreq = {0};
++	struct sockaddr_ll bind_struct;
++
++	if (ifp == NULL) {
++	  log_message(LOG_ERR,
++		  "Interface passed to open_vrrp_read_socket is NULL this is a coding error");
++	  return -1;
++	}
+ 
+-	/* open the socket */
+-	fd = socket(family, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, proto);
+-	if (fd < 0) {
+-		int err = errno;
+-		log_message(LOG_INFO, "cant open raw socket. errno=%d", err);
++	/*
++	 * Vyatta Specifc - The way VRRP works on Vyatta is to listen on the base
++	 * interface for VRRP adverts with RFC mode we then send adverts out of the
++	 * created interface, without RFC we use the base interface.
++	 */
++	const interface_t *base_ifp = IF_BASE_IFP(ifp);
++	int idx = IF_BASE_INDEX(base_ifp);
++
++	if (family != AF_INET && family != AF_INET6) {
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Wrong AF to open read socket",
++			ifp->ifname);
++		return -1;
++	}
++
++	/* Open PF_PACKET socket, listening for
++	 * EtherType ETHER_TYPE
++	 */
++	fd = socket(PF_PACKET, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, htons(ETH_P_ALL));
++	if (fd == -1) {
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Could not get raw socket\n",
++			ifp->ifname);
+ 		return -1;
+ 	}
++
+ #if !HAVE_DECL_SOCK_CLOEXEC
+ 	set_sock_flags(fd, F_SETFD, FD_CLOEXEC);
+ #endif
+@@ -2388,66 +2514,109 @@ open_vrrp_read_socket(sa_family_t family
+ 			log_message(LOG_INFO, "vrrp set receive socket buffer size error %d", errno);
+ 	}
+ 
+-#if HAVE_DECL_IP_MULTICAST_ALL  /* Since Linux 2.6.31 */
+-	/* Ensure no unwanted multicast packets are queued to this interface */
+-	if (family == AF_INET)
+-		if_setsockopt_mcast_all(family, &fd);
+-#endif
+-
+-	if (!unicast_src) {
+-		/* Join the VRRP multicast group */
+-// TODO - allow different mcast per vrrp instance - VRID  check then needs to include mcast group
+-// could have different socket per mcast addr, or not
+-// OR just say use different keepalived instances
+-		/* coverity[forward_null] - ifp cannot be NULL if not unicast */
+-		if_join_vrrp_group(family, &fd, ifp);
+-
+-		/* Binding to, for IPv4 the multicast address and for IPv6 the loopback address,
+-		 * stops us receiving unicast pkts when we are only interested in multicast.
+-		 * Binding to a multicast address appears to fail for IPv6, so if we allow different
+-		 * mcast addresses we only need one socket per interface.
+-		 */
+-		if ((family == AF_INET && bind(fd, PTR_CAST_CONST(struct sockaddr, &global_data->vrrp_mcast_group4), sizeof(struct sockaddr_in))) ||
+-		    (family == AF_INET6 && bind(fd, PTR_CAST_CONST(struct sockaddr, &loopback6), sizeof(struct sockaddr_in6))))
+-			log_message(LOG_INFO, "bind for multicast failed %d - %m", errno);
++	/* Allow the socket to be reused - in case connection
++	 * is closed prematurely
++	 */
++	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
++				   &sockopt,  sizeof sockopt) == -1) {
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Failed SO_REUSEADDR\n",
++			ifp->ifname);
++		close(fd);
++		return -1;
++	}
++
++
++	/*
++	 * Bind to device - have to use bind() here as we're using a
++	 * packet socket, see https://www.systutorials.com/docs/linux/man/7-packet/
++	 */
++	bind_struct.sll_family = PF_PACKET;
++	bind_struct.sll_ifindex = (int) idx;
++	if (bind(fd, (struct sockaddr*)&bind_struct, sizeof(bind_struct)) == -1) {
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Failed to bind to read interface %s\n",
++			ifp->ifname, base_ifp->ifname);
++		close(fd);
++		return -1;
++	}
++
++	/* Join the Multicast MAC group */
++	if (family == AF_INET ) {
++		/* Set VRRP Multicast MAC for IPv4 */
++		pmreq.mr_ifindex = (int) idx;
++		pmreq.mr_type			= PACKET_MR_MULTICAST;
++		pmreq.mr_alen			= ETH_ALEN;
++		pmreq.mr_address [0]	= ipv4_mcast_mac[0];
++		pmreq.mr_address [1]	= ipv4_mcast_mac[1];
++		pmreq.mr_address [2]	= ipv4_mcast_mac[2];
++		pmreq.mr_address [3]	= ipv4_mcast_mac[3];
++		pmreq.mr_address [4]	= ipv4_mcast_mac[4];
++		pmreq.mr_address [5]	= ipv4_mcast_mac[5];
++
+ 	} else {
+-		/* Bind to the local unicast address */
+-		if (bind(fd, PTR_CAST_CONST(struct sockaddr, unicast_src), unicast_src->ss_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6))) {
+-			log_message(LOG_INFO, "bind unicast_src %s failed %d - %m", inet_sockaddrtos(unicast_src), errno);
+-			close(fd);
+-			return -2;
+-		}
++		/* Set VRRP Multicast MAC for IPv6 */
++		pmreq.mr_ifindex = (int) idx;
++		pmreq.mr_type			= PACKET_MR_MULTICAST;
++		pmreq.mr_alen			= ETH_ALEN;
++		pmreq.mr_address [0]	= ipv6_mcast_mac[0];
++		pmreq.mr_address [1]	= ipv6_mcast_mac[1];
++		pmreq.mr_address [2]	= ipv6_mcast_mac[2];
++		pmreq.mr_address [3]	= ipv6_mcast_mac[3];
++		pmreq.mr_address [4]	= ipv6_mcast_mac[4];
++		pmreq.mr_address [5]	= ipv6_mcast_mac[5];
++	}
++
++	/* Join the VRRP Multicast group for the AF */
++	if (setsockopt (fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP,
++					&pmreq, sizeof (pmreq)) < 0 ){
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Failed PACKET_ADD_MEMBERSHIP\n",
++			ifp->ifname);
++		close(fd);
++		return -1;
+ 	}
+ 
+-#ifdef IPV6_RECVHOPLIMIT	/* Since Linux 2.6.14 */
+-	/* IPv6 we need to receive the hop count as ancillary data */
+-	if (family == AF_INET6) {
+-		if (setsockopt(fd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &on, sizeof on))
+-			log_message(LOG_INFO, "fd %d - set IPV6_RECVHOPLIMIT error %d (%m)", fd, errno);
++	/* FILTER_ON_DESTINATION */
++	struct sock_fprog fcode = {0};
++
++	if (family == AF_INET) {
++		fcode.len = sizeof(ipv4_fcode) / sizeof(struct sock_filter);
++		fcode.filter = &ipv4_fcode[0];
++	} else {
++		fcode.len = sizeof(ipv6_fcode) / sizeof(struct sock_filter);
++		fcode.filter = &ipv6_fcode[0];
+ 	}
+-#endif
+ 
+-#ifdef IPV6_RECVPKTINFO		/* Since Linux 2.6.14 */
+-	/* Receive the destination address as ancillary data to determine if packet multicast */
+-	if (family == AF_INET6) {
+-		if (setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof on))
+-			log_message(LOG_INFO, "fd %d - set IPV6_RECVPKTINFO error %d (%m)", fd, errno);
++	if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER,
++				   &fcode, sizeof(fcode)) == -1) {
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Failed SO_ATTACH_FILTER\n",
++			ifp->ifname);
++		close(fd);
++		return -1;
+ 	}
+-#endif
+ 
+-#ifdef _NETWORK_TIMESTAMP_
+-	if (do_network_timestamp) {
+-#if 0
+-		int flags   = SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_RX_SOFTWARE ;
+-		if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING, &flags, sizeof(flags)) < 0)
+-			log_message(LOG_INFO, "ERROR: setsockopt %d SO_TIMESTAMPING", fd);
+-		if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &on, sizeof(on)) < 0)
+-			log_message(LOG_INFO, "ERROR: setsockopt %d SO_TIMESTAMP", fd);
+-#endif
+-		if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on)) < 0)	// This overrides SO_TIMESTAMP
+-			log_message(LOG_INFO, "ERROR: setsockopt %d SO_TIMESTAMPNS", fd);
++	/* Allow ancillary information for recvmsg calls */
++
++	if (setsockopt(fd, SOL_PACKET, PACKET_AUXDATA,
++				   &auxopt,  sizeof auxopt) == -1) {
++		log_message(LOG_ERR,
++			"VRRP_Interface(%s) Failed PACKET_AUXDATA\n",
++			ifp->ifname);
++		close(fd);
++		return -1;
++	}
++
++	if (base_ifp) {
++		if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE,
++					   IF_NAME(base_ifp),((socklen_t) strlen(IF_NAME(base_ifp)) + 1))) {
++			log_message(LOG_INFO, "can't bind to device %s. errno=%d. (try to run it as root)",
++			    IF_NAME(base_ifp), errno);
++			close(fd);
++			return -1;
++		}
+ 	}
+-#endif
+ 
+ 	/* Need to bind read socket so only process packets for interface we're
+ 	 * interested in.
+@@ -2455,17 +2624,12 @@ open_vrrp_read_socket(sa_family_t family
+ 	 * This is applicable for both unicast and multicast operation as well as
+ 	 * IPv4 and IPv6.
+ 	 */
+-	if (ifp)
+-		if_setsockopt_bindtodevice(&fd, ifp);
++	if (base_ifp)
++		if_setsockopt_bindtodevice(&fd, base_ifp);
+ 
+ 	if (fd < 0)
+ 		return -1;
+ 
+-	if (family == AF_INET6) {
+-		/* Let kernel calculate checksum. */
+-		if_setsockopt_ipv6_checksum(&fd);
+-	}
+-
+ 	return fd;
+ }
+ 
+@@ -2506,6 +2670,11 @@ open_sockpool_socket(sock_t *sock)
+ 	else
+ 		sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
+ 						     sock->ifp, unicast_src_p);
++
++	if (sock->fd_in < 0 || sock->fd_out < 0)
++		log_message(LOG_ERR, "VRRP IfIndex(%d) Ifname(%s) Error adding sockets fd_in(%d) fd_out(%d)",
++			IF_INDEX(sock->ifp), IF_NAME(sock->ifp),
++			sock->fd_in, sock->fd_out);
+ }
+ 
+ /* Try to find a VRRP instance */
 --- a/keepalived/vrrp/vrrp_vmac.c
 +++ b/keepalived/vrrp/vrrp_vmac.c
 @@ -164,7 +164,7 @@ remove_vmac_auto_gen_addr(interface_t *i
@@ -109,15 +540,15 @@
  bool
  netlink_link_add_vmac(vrrp_t *vrrp)
  {
-@@ -412,9 +437,9 @@ netlink_link_add_vmac(vrrp_t *vrrp)
+@@ -411,10 +436,8 @@ netlink_link_add_vmac(vrrp_t *vrrp)
+ 		firewall_add_vmac(vrrp);
  #endif
  
- 	/* bring it UP ! */
+-	/* bring it UP ! */
 -	__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
-+	// __set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
++	/* Set vyatta specific sys/proc info */
  	vyatta_if_setup(vrrp->ifp->ifname);
 -	netlink_link_up(vrrp);
-+	// netlink_link_up(vrrp);
  
  #if !HAVE_DECL_IFLA_INET6_ADDR_GEN_MODE
  	if (vrrp->family == AF_INET6 || vrrp->evip_other_family) {
@@ -150,3 +581,223 @@
  				if (top->weight > 0)
  					vrrp->total_priority += top->weight * top->weight_multiplier;
  			} else {
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -31,6 +31,9 @@
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <inttypes.h>
++#include <netinet/ip.h>
++#include <netinet/ip6.h>
++#include <linux/if_packet.h>
+ 
+ #include "vrrp_scheduler.h"
+ #include "vrrp_track.h"
+@@ -402,7 +405,6 @@ vrrp_register_workers(list_head_t *l)
+ 					     bfd_vrrp_event_pipe[0], TIMER_NEVER, false);
+ 	}
+ #endif
+-
+ 	/* Register VRRP workers threads */
+ 	list_for_each_entry(sock, l, e_list) {
+ 		/* Register a timer thread if interface exists */
+@@ -825,6 +827,45 @@ vrrp_dispatcher_read_timeout(sock_t *soc
+ 	return sock->fd_in;
+ }
+ 
++/*
++ * Using a packet filter gives all the packets that match the filter,
++ * even ones from the local box. We shouldn't respond to packets that are from
++ * groups on our box.
++ * This function returns 1 if an IP address is in the list of IPs returned by
++ * getifaddrsand 0 otherwise. The list is updated in vrrp_netlink.c every time
++ * an address is added or deleted.
++ */
++static int
++ip_is_local(char * ip_address, int family)
++{
++		struct ifaddrs *ifaddr, *ifa;
++		int string_length = (family == AF_INET)? INET_ADDRSTRLEN : INET6_ADDRSTRLEN;
++		char test_ip_address[string_length];
++		struct sockaddr_in af_inet_sock;
++		struct sockaddr_in6 af_inet6_sock;
++
++		ifaddr = global_data->local_addresses;
++
++		for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++			if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != family) {
++				continue;
++			}
++
++			if (family == AF_INET) {
++				af_inet_sock = *(struct sockaddr_in *)ifa->ifa_addr;
++				inet_ntop(family, &(af_inet_sock.sin_addr), test_ip_address, string_length);
++			} else if (family == AF_INET6) {
++				af_inet6_sock = *(struct sockaddr_in6 *)ifa->ifa_addr;
++				inet_ntop(family, &(af_inet6_sock.sin6_addr), test_ip_address, string_length);
++			}
++
++			if (strncmp(test_ip_address, ip_address, string_length) == 0)
++				return 1;
++		}
++	return 0;
++}
++
++
+ /* Handle dispatcher read packet */
+ static int
+ vrrp_dispatcher_read(sock_t *sock)
+@@ -835,13 +876,15 @@ vrrp_dispatcher_read(sock_t *sock)
+ 	int prev_state = 0;
+ 	struct sockaddr_storage src_addr = { .ss_family = AF_UNSPEC };
+ 	vrrp_t vrrp_lookup;
++	void *eth_payload;
++	struct tpacket_auxdata *auxdata;
+ #ifdef _NETWORK_TIMESTAMP_
+ 	char control_buf[128] __attribute__((aligned(__alignof__(struct cmsghdr))));
+ #else
+ 	char control_buf[64] __attribute__((aligned(__alignof__(struct cmsghdr))));
+ #endif
+ 	struct iovec iovec = { .iov_base = vrrp_buffer, .iov_len = vrrp_buffer_len };
+-	struct msghdr msghdr = { .msg_name = &src_addr, .msg_namelen = sizeof(src_addr),
++	struct msghdr msghdr = { .msg_name = NULL, .msg_namelen = 0,
+ 				 .msg_iov = &iovec, .msg_iovlen = 1,
+ 				 .msg_control = control_buf, .msg_controllen = sizeof(control_buf) };
+ 	struct cmsghdr *cmsg;
+@@ -852,7 +895,19 @@ vrrp_dispatcher_read(sock_t *sock)
+ #ifdef DEBUG_RECVMSG
+ 	unsigned recv_data_count = 0;
+ #endif
+-	const struct iphdr *iph;
++	/* Generic AF */
++	char *ip_str;
++	uint32_t our_address;
++
++	/* IPv4 */
++	struct iphdr *iph;
++	uint32_t pkt_saddr_ipv4;
++	char ipv4_str[INET_ADDRSTRLEN];
++
++	/* IPv6 */
++	struct ip6_hdr *ip6h;
++	struct in6_addr pkt_saddr_ipv6;
++	char ipv6_str[INET6_ADDRSTRLEN];
+ 
+ 	/* Strategy here is to handle incoming adverts pending into socket recvq
+ 	 * but stop if receive 2nd advert for a VRID on socket (this applies to
+@@ -861,7 +916,7 @@ vrrp_dispatcher_read(sock_t *sock)
+ 	while (!terminate_receiving) {
+ 		/* read & affect received buffer */
+ 		eintr_count = 0;
+-		while ((len = recvmsg(sock->fd_in, &msghdr, MSG_TRUNC | MSG_CTRUNC)) == -1 &&
++		while ((len = recvmsg(sock->fd_in, &msghdr, 0)) == -1 &&
+ 		       check_EINTR(errno) && eintr_count++ < 10);
+ 		if (len < 0) {
+ #ifdef DEBUG_RECVMSG
+@@ -941,9 +996,10 @@ vrrp_dispatcher_read(sock_t *sock)
+ 			msghdr.msg_controllen = 0;
+ 		}
+ 
++		eth_payload = (void *)(vrrp_buffer + sizeof(struct ether_header));
+ 		/* Check the received data includes at least the IP, possibly
+ 		 * the AH header and the VRRP header */
+-		if (!(hd = vrrp_get_header(sock->family, vrrp_buffer, len)))
++		if (!(hd = vrrp_get_header(sock->family, eth_payload, len)))
+ 			break;
+ 
+ 		/* Defense strategy here is to handle no more than one advert
+@@ -973,13 +1029,23 @@ vrrp_dispatcher_read(sock_t *sock)
+ 		vrrp->pkt_saddr = src_addr;
+ 		vrrp->rx_ttl_hop_limit = -1;           /* Default to not received */
+ 		if (sock->family == AF_INET) {
+-			iph = PTR_CAST_CONST(struct iphdr, vrrp_buffer);
++			iph = PTR_CAST(struct iphdr, eth_payload);
+ 			vrrp->multicast_pkt = IN_MULTICAST(htonl(iph->daddr));
+ 			vrrp->rx_ttl_hop_limit = iph->ttl;
+ 		} else
+ 			vrrp->multicast_pkt = false;
+ 		for (cmsg = CMSG_FIRSTHDR(&msghdr); cmsg; cmsg = CMSG_NXTHDR(&msghdr, cmsg)) {
+ 			expected_cmsg = false;
++			if (cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
++				expected_cmsg = true;
++				auxdata = (struct tpacket_auxdata *)CMSG_DATA(cmsg);
++				if ((auxdata->tp_status & TP_STATUS_VLAN_TPID_VALID) != 0) {
++					// Packets that have VLAN tags are not destined for us, the control plane strips them before
++					// sending them to keepalived. Ignore any that we see
++					log_message(LOG_DEBUG, "Got a packet with a VLAN tag - dropping it before processing");
++					break;
++				}
++			}
+ 			if (cmsg->cmsg_level == IPPROTO_IPV6) {
+ 				expected_cmsg = true;
+ 
+@@ -1044,12 +1110,67 @@ vrrp_dispatcher_read(sock_t *sock)
+ 		}
+ #endif
+ 
++		if (sock->family == AF_INET) {
++			/* IPv4 - Extract source addr, and check for own pkt */
++			iph = (struct iphdr *) eth_payload;
++			pkt_saddr_ipv4 = iph->saddr;
++
++			inet_ntop(AF_INET, &pkt_saddr_ipv4,
++					  ipv4_str, sizeof(ipv4_str));
++			our_address = ip_is_local(ipv4_str, sock->family);
++
++			/*
++			 * IPAO mode appears as matching one of our own addresses (on the back up)
++			 * if the received packet matches our effective priority then it's our packet (most likely)
++			 */
++			if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
++				/* DROP our own packets */
++				log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
++				break;
++			}
++
++			/* Record source address in VRRP group */
++			inet_ip4tosockaddr(&pkt_saddr_ipv4, &vrrp->pkt_saddr);
++
++			/* Log the packet from the remote Peer */
++			ip_str = ipv4_str;
++
++		} else {
++
++			/* IPv6 - Extract source addr, and check for own pkt */
++			ip6h = (struct ip6_hdr *) eth_payload;
++
++			inet_ntop(AF_INET6, &ip6h->ip6_src,
++					  ipv6_str, sizeof(ipv6_str));
++
++			our_address = ip_is_local(ipv6_str, sock->family);
++
++			/*
++			 * IPAO mode appears as matching one of our own addresses (on the back up)
++			 * if the received packet matches our effective priority then it's our packet (most likely)
++			 */
++			if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
++				/* DROP our own packets */
++				log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
++				break;
++			}
++
++			/* Record source address in VRRP group */
++			inet_ip6tosockaddr(&ip6h->ip6_src, &vrrp->pkt_saddr);
++
++			/* Log the packet from the remote Peer */
++			ip_str = ipv6_str;
++		}
++
++		log_message(LOG_DEBUG,
++			"VRRP_Instance(%s) - Peer Packet with src = %s, and priority %d",
++					vrrp->iname, ip_str, hd->priority);
+ 		prev_state = vrrp->state;
+ 
+ 		if (vrrp->state == VRRP_STATE_BACK)
+-			vrrp_state_backup(vrrp, hd, vrrp_buffer, len);
++			vrrp_state_backup(vrrp, hd, eth_payload, len - sizeof(struct ether_header));
+ 		else if (vrrp->state == VRRP_STATE_MAST) {
+-			if (vrrp_state_master_rx(vrrp, hd, vrrp_buffer, len))
++			if (vrrp_state_master_rx(vrrp, hd, eth_payload, len - sizeof(struct ether_header)))
+ 				vrrp_state_leave_master(vrrp, false);
+ 		} else
+ 			log_message(LOG_INFO, "(%s) In dispatcher_read with state %d"
