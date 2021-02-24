@@ -1,0 +1,107 @@
+---
+ keepalived/core/global_data.c           |   13 +++++++++++++
+ keepalived/core/keepalived_netlink.c    |   12 ++++++++++--
+ keepalived/include/global_data.h        |    2 ++
+ keepalived/include/keepalived_netlink.h |    1 +
+ keepalived/vrrp/vrrp_daemon.c           |    5 +++++
+ 5 files changed, 31 insertions(+), 2 deletions(-)
+
+--- a/keepalived/core/global_data.c
++++ b/keepalived/core/global_data.c
+@@ -165,6 +165,15 @@ alloc_global_data(void)
+ 
+ 	PMALLOC(new);
+ 	INIT_LIST_HEAD(&new->email);
++	new->local_addresses = NULL;
++
++	if (getifaddrs(&(new->local_addresses)) == -1) {
++		log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
++		free_email_list(&new->email);
++		FREE(new);
++		return NULL;
++	}
++
+ 	new->smtp_alert = -1;
+ #ifdef _WITH_VRRP_
+ 	new->smtp_alert_vrrp = -1;
+@@ -351,6 +360,10 @@ free_global_data(data_t * data)
+ 	if (!data)
+ 		return;
+ 
++	if (data->local_addresses != NULL) {
++		freeifaddrs(data->local_addresses);
++		data->local_addresses = NULL;
++	}
+ 	free_email_list(&data->email);
+ #if HAVE_DECL_CLONE_NEWNET
+ 	FREE_CONST_PTR(data->network_namespace);
+--- a/keepalived/core/keepalived_netlink.c
++++ b/keepalived/core/keepalived_netlink.c
+@@ -1208,7 +1208,15 @@ netlink_if_address_filter(__attribute__(
+ 					(h->nlmsg_type == RTM_NEWADDR));
+ 	}
+ #endif
+-
++	if (NULL != global_data) {
++		if (NULL != global_data->local_addresses) {
++			freeifaddrs(global_data->local_addresses);
++			global_data->local_addresses = NULL;
++		}
++		if(getifaddrs(&(global_data->local_addresses)) == -1){
++			log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
++		}
++	}
+ 	return 0;
+ }
+ 
+@@ -1910,7 +1918,7 @@ netlink_interface_lookup(char *name)
+ #endif
+ 
+ /* Addresses lookup bootstrap function */
+-static int
++int
+ netlink_address_lookup(void)
+ {
+ 	int status;
+--- a/keepalived/include/global_data.h
++++ b/keepalived/include/global_data.h
+@@ -30,6 +30,7 @@
+ #include <stdio.h>
+ #include <sys/socket.h>
+ #include <sched.h>
++#include <ifaddrs.h>
+ 
+ #ifdef HAVE_LINUX_NETFILTER_X_TABLES_H
+ #include <linux/netfilter/x_tables.h>
+@@ -199,6 +200,7 @@ typedef struct _data {
+ #if HAVE_DECL_RLIMIT_RTTIME == 1
+ 	rlim_t				vrrp_rlimit_rt;
+ #endif
++	struct ifaddrs 		*local_addresses;
+ #endif
+ #ifdef _WITH_LVS_
+ 	bool				have_checker_config;
+--- a/keepalived/include/keepalived_netlink.h
++++ b/keepalived/include/keepalived_netlink.h
+@@ -132,6 +132,7 @@ extern struct rtattr *rta_nest(struct rt
+ extern size_t rta_nest_end(struct rtattr *, struct rtattr *);
+ extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
+ extern int netlink_interface_lookup(char *);
++extern int netlink_address_lookup(void);
+ extern void kernel_netlink_poll(void);
+ extern void process_if_status_change(interface_t *);
+ #endif
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -510,6 +510,11 @@ start_vrrp(data_t *prev_global_data)
+ 
+ 	if (!global_data)
+ 		global_data = alloc_global_data();
++	if (global_data == NULL) {
++		stop_vrrp(KEEPALIVED_EXIT_FATAL);
++		return;
++	}
++	netlink_address_lookup();
+ 
+ 	/* Parse configuration file */
+ 	vrrp_data = alloc_vrrp_data();

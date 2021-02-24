@@ -3,6 +3,7 @@ v2_2_20_fixup.patch
 
 ##Vyatta get running
 vyatta_if_additions.patch
+vyatta_extra_data_structures.patch
 vyatta_dbus_rfc_additions.patch
 vyatta_upstream_reversions.patch
 vyatta_rfc_changes.patch
