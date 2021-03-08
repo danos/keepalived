@@ -39,20 +39,33 @@ interface behaviour for the keepalived v2.2.0 release:
  * Created the BPF and rewrote open_vrrp_read_socket() to use this instead
    of the upstream methodology.
  * Removed flags to recvmsg() the given ones cause an invalid argument
-   error
+   error.
  * Added further cmsg options when reading a packet from a socket.
      The BPF picks up packets that come from us as well so we should
      ignore them and any packets with a vlan tag.
      The packets sent to a VIF interface have the vlan tag stripped.
+ * Changed when update_interface_flags is called, should only be called
+   if the physical interface's flags change not the VMAC interface.
+ * Moved code from stop_incorrect_ip_route_removal.patch into this patch
+   and removed that patch. This code changes the prefix used to add a
+   VIP if the configured prefix overlaps with an existing IP address.
+   This stops the removal of an IP route
+ * Moved code from add_effective_and_configure_prefix.patch to this patch
+   after changing the effective prefix when it overlaps
 
 ---
- keepalived/include/vrrp_if.h     |    2 
- keepalived/include/vrrp_vmac.h   |    2 
- keepalived/vrrp/vrrp.c           |  311 ++++++++++++++++++++++++++++++---------
- keepalived/vrrp/vrrp_scheduler.c |  137 ++++++++++++++++-
- keepalived/vrrp/vrrp_track.c     |    4 
- keepalived/vrrp/vrrp_vmac.c      |   31 +++
- 6 files changed, 401 insertions(+), 86 deletions(-)
+ keepalived/core/keepalived_netlink.c |    9 -
+ keepalived/include/vrrp_if.h         |    2 
+ keepalived/include/vrrp_ipaddress.h  |    1 
+ keepalived/include/vrrp_vmac.h       |    2 
+ keepalived/vrrp/vrrp.c               |  311 +++++++++++++++++++++++++++--------
+ keepalived/vrrp/vrrp_ipaddress.c     |   85 +++++++++
+ keepalived/vrrp/vrrp_scheduler.c     |  137 ++++++++++++++-
+ keepalived/vrrp/vrrp_track.c         |    4 
+ keepalived/vrrp/vrrp_vmac.c          |   31 +++
+ lib/utils.c                          |    2 
+ lib/utils.h                          |    1 
+ 11 files changed, 497 insertions(+), 88 deletions(-)
 
 --- a/keepalived/include/vrrp_vmac.h
 +++ b/keepalived/include/vrrp_vmac.h
@@ -801,3 +814,188 @@ interface behaviour for the keepalived v2.2.0 release:
  				vrrp_state_leave_master(vrrp, false);
  		} else
  			log_message(LOG_INFO, "(%s) In dispatcher_read with state %d"
+--- a/keepalived/vrrp/vrrp_ipaddress.c
++++ b/keepalived/vrrp/vrrp_ipaddress.c
+@@ -26,6 +26,7 @@
+ #include <errno.h>
+ #include <arpa/inet.h>
+ #include <stdio.h>
++#include <netinet/in.h>
+ 
+ /* local include */
+ #include "vrrp_ipaddress.h"
+@@ -68,6 +69,66 @@ ipaddresstos(char *buf, const ip_address
+ 	return buf;
+ }
+ 
++/*
++ * Compare the IPv4 ipaddress and prefix being added to see if the combination
++ * of the two overlap with an existing ipaddress and prefix. Return true if
++ * there is an overlap of subnets and false otherwise.
++ */
++static bool
++does_ipv4_subnet_overlap(ip_address_t *ipaddress)
++{
++	struct ifaddrs *ifa;
++	int family = ipaddress->ifa.ifa_family;
++	uint32_t comparison_prefix_length;
++	uint32_t comparison_netmask;
++	uint32_t comparison_subnet;
++	uint32_t new_subnet;
++
++	if (family == AF_INET6) {
++		return false;
++	}
++
++	log_message(LOG_INFO, "Checking if the address we're trying to add overlaps"
++				" with any other address");
++	new_subnet = ipaddress->u.sin.sin_addr.s_addr &
++				 inet_cidrtomask(ipaddress->ifa.ifa_prefixlen);
++
++	for (ifa = global_data->local_addresses; ifa != NULL; ifa = ifa->ifa_next) {
++		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != family) {
++			continue;
++		}
++		comparison_netmask =
++			(*(struct sockaddr_in *)ifa->ifa_netmask).sin_addr.s_addr;
++		comparison_subnet =
++			(*(struct sockaddr_in *)ifa->ifa_addr).sin_addr.s_addr &
++			comparison_netmask;
++
++		/*
++		 * Kernighan method to find how many bits are set, will loop as many
++		 * times as there are bits set.
++		 */
++		comparison_prefix_length = 0;
++		while (comparison_netmask != 0) {
++			comparison_netmask = comparison_netmask & (comparison_netmask - 1);
++			comparison_prefix_length++;
++		}
++
++		/*
++		 * Two checks are needed to see if subnets overlap:
++		 *  1) The base subnets must be the same (172.16.1.0 == 172.16.1.0)
++		 *  2) The prefix lengths must be the same as well. This catches the
++		 *     first subnet for overlapping prefixes (172.16.1.10/24 ==
++		 * 	   172.16.1.0 and 172.16.1.64/25 == 172.16.1.0)
++		 */
++		if ((comparison_subnet == new_subnet) &&
++			(comparison_prefix_length == ipaddress->ifa.ifa_prefixlen)) {
++			return true;
++		}
++	}
++	return false;
++}
++
++
+ /* Add/Delete IP address to a specific interface_t */
+ int
+ netlink_ipaddress(ip_address_t *ip_addr, int cmd)
+@@ -103,6 +164,26 @@ netlink_ipaddress(ip_address_t *ip_addr,
+ 	else if (!ip_addr->ifa.ifa_index)
+ 		ip_addr->ifa.ifa_index = ip_addr->ifp->ifindex;
+ 
++	if (ip_addr->ifa.ifa_family == AF_INET) {
++		/*
++		 * When two IP addresses have matching subnets deleting one of the ip
++		 * addresses will delete both routes in the kernel. This causes problems
++		 * with traffic forwarding. To avoid this when adding new VIPs we should
++		 * check existing IP addresses and when an overlap is found add the VIPs
++		 * with a /32 prefix instead of the configured prefix length.
++		 *
++		 * TODO: IPv6 for similar problem, the usecase that this was found for
++		 * 		 was IPv4. There may be a similar problem with IPv6.
++		 */
++		if ((cmd == IPADDRESS_ADD) && does_ipv4_subnet_overlap(ip_addr)) {
++			char *addr_str = ipaddresstos(NULL, ip_addr);
++			log_message(LOG_INFO, "New IP subnet for %s/%d overlaps with an IP "
++			  			"subnet that already exists. Overriding prefix length "
++						"to be /32",
++			   			addr_str, ip_addr->ifa.ifa_prefixlen);
++			ip_addr->ifa.ifa_prefixlen = 32;
++		}
++	}
+ 	memset(&req, 0, sizeof (req));
+ 
+ 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof (struct ifaddrmsg));
+@@ -187,6 +268,9 @@ netlink_ipaddress(ip_address_t *ip_addr,
+ 		netlink_error_ignore = ENODEV;
+ 	if (netlink_talk(&nl_cmd, &req.n) < 0)
+ 		status = -1;
++
++	if (cmd == IPADDRESS_DEL)
++		ip_addr->ifa.ifa_prefixlen = ip_addr->configured_prefix;
+ 	netlink_error_ignore = 0;
+ 
+ 	return status;
+@@ -366,6 +450,7 @@ parse_ipaddress(ip_address_t *ip_addr, c
+ 
+ 		str_dup = STRNDUP(str, p - str);
+ 	}
++	new->configured_prefix = new->ifa.ifa_prefixlen;
+ 
+ 	addr = (IP_IS6(new)) ? (void *) &new->u.sin6_addr :
+ 			       (void *) &new->u.sin.sin_addr;
+--- a/lib/utils.c
++++ b/lib/utils.c
+@@ -837,6 +837,7 @@ inet_broadcast(uint32_t network, uint32_
+ {
+ 	return 0xffffffff - netmask + network;
+ }
++#endif
+ 
+ /*
+  * Convert CIDR netmask notation to long notation.
+@@ -851,7 +852,6 @@ inet_cidrtomask(uint8_t cidr)
+ 		mask |= (1 << (31 - b));
+ 	return ntohl(mask);
+ }
+-#endif
+ 
+ void
+ format_mac_buf(char *op, size_t op_len, const unsigned char *addr, size_t addr_len)
+--- a/lib/utils.h
++++ b/lib/utils.h
+@@ -259,6 +259,7 @@ extern int integer_to_string(const int,
+ extern FILE *fopen_safe(const char *, const char *);
+ extern void set_std_fd(bool);
+ extern void close_std_fd(void);
++uint32_t inet_cidrtomask(uint8_t cidr);
+ #if defined _WITH_VRRP_ || defined _WITH_BFD_
+ extern int open_pipe(int [2]);
+ #endif
+--- a/keepalived/core/keepalived_netlink.c
++++ b/keepalived/core/keepalived_netlink.c
+@@ -1892,7 +1892,11 @@ netlink_if_link_filter(__attribute__((un
+ 	if (!netlink_if_link_populate(ifp, tb, ifi))
+ 		return -1;
+ 
+-	if (ifp->ifindex)
++	if (ifp->ifindex
++#ifdef _HAVE_VRRP_VMAC_
++		&& IF_INDEX(ifp) == IF_BASE_INDEX(ifp)
++#endif
++	)
+ 		update_interface_flags(ifp, ifi->ifi_flags);
+ 
+ 	return 0;
+@@ -2178,6 +2182,9 @@ netlink_link_filter(__attribute__((unuse
+ 	}
+ 
+ 	/* Update flags. Flags == 0 means interface deleted. */
++#ifdef _HAVE_VRRP_VMAC_
++	if (IF_INDEX(ifp) == IF_BASE_INDEX(ifp))
++#endif
+ 	update_interface_flags(ifp, (h->nlmsg_type == RTM_DELLINK) ? 0 : ifi->ifi_flags);
+ 
+ 	return 0;
+--- a/keepalived/include/vrrp_ipaddress.h
++++ b/keepalived/include/vrrp_ipaddress.h
+@@ -51,6 +51,7 @@ typedef struct _ip_address {
+ 		struct in6_addr sin6_addr;
+ 	} u;
+ 
++	uint8_t			configured_prefix;	/* Prefix that the IP address was configured with */
+ 	interface_t		*ifp;			/* Interface owning IP address */
+ 	char			*label;			/* Alias name, e.g. eth0:1 */
+ #if HAVE_DECL_IFA_FLAGS
