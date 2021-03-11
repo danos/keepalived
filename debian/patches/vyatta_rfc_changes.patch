@@ -58,14 +58,14 @@ interface behaviour for the keepalived v2.2.0 release:
  keepalived/include/vrrp_if.h         |    2 
  keepalived/include/vrrp_ipaddress.h  |    1 
  keepalived/include/vrrp_vmac.h       |    2 
- keepalived/vrrp/vrrp.c               |  311 +++++++++++++++++++++++++++--------
+ keepalived/vrrp/vrrp.c               |  314 +++++++++++++++++++++++++++--------
  keepalived/vrrp/vrrp_ipaddress.c     |   85 +++++++++
  keepalived/vrrp/vrrp_scheduler.c     |  137 ++++++++++++++-
  keepalived/vrrp/vrrp_track.c         |    4 
  keepalived/vrrp/vrrp_vmac.c          |   31 +++
  lib/utils.c                          |    2 
  lib/utils.h                          |    1 
- 11 files changed, 497 insertions(+), 88 deletions(-)
+ 11 files changed, 500 insertions(+), 88 deletions(-)
 
 --- a/keepalived/include/vrrp_vmac.h
 +++ b/keepalived/include/vrrp_vmac.h
@@ -199,16 +199,19 @@ interface behaviour for the keepalived v2.2.0 release:
  	/* Build the message data */
  	memset(&msg, 0, sizeof(msg));
  	msg.msg_iov = &iov;
-@@ -1483,6 +1558,8 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
+@@ -1483,6 +1558,11 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
  		check_tx_checksum(vrrp, peer);
  #endif
  
-+	if (vrrp->sockets->fd_in == -1)
++	if (vrrp->sockets->fd_out == -1) {
 +		log_message(LOG_ERR, "VRRP_Instance(%s) Send socket invalid!", vrrp->iname);
++		errno = EBADF;
++		return -1;
++	}
  	/* Send the packet */
  	return sendmsg(vrrp->sockets->fd_out, &msg, (peer) ? 0 : MSG_DONTROUTE);
  }
-@@ -1665,6 +1742,14 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
+@@ -1665,6 +1745,14 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
  static void
  vrrp_state_become_master(vrrp_t * vrrp)
  {
@@ -223,7 +226,7 @@ interface behaviour for the keepalived v2.2.0 release:
  	++vrrp->stats->become_master;
  
  	if (vrrp->version == VRRP_VERSION_3 &&
-@@ -1807,6 +1892,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
+@@ -1807,6 +1895,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
  	}
  #endif
  
@@ -237,7 +240,7 @@ interface behaviour for the keepalived v2.2.0 release:
  	/* set the new vrrp state */
  	if (vrrp->wantstate == VRRP_STATE_BACK) {
  		log_message(LOG_INFO, "(%s) Entering BACKUP STATE", vrrp->iname);
-@@ -1837,9 +1929,15 @@ void
+@@ -1837,9 +1932,15 @@ void
  vrrp_state_leave_fault(vrrp_t * vrrp)
  {
  	/* set the new vrrp state */
@@ -255,7 +258,7 @@ interface behaviour for the keepalived v2.2.0 release:
  		if (vrrp->state != vrrp->wantstate)
  			log_message(LOG_INFO, "(%s) Entering %s STATE", vrrp->iname, vrrp->wantstate == VRRP_STATE_BACK ? "BACKUP" : "FAULT");
  		if (vrrp->wantstate == VRRP_STATE_FAULT && vrrp->state == VRRP_STATE_MAST) {
-@@ -2080,7 +2178,7 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
+@@ -2080,7 +2181,7 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
  
  	if (hd->priority == vrrp->effective_priority) {
  		if (addr_cmp == 0)
@@ -264,7 +267,7 @@ interface behaviour for the keepalived v2.2.0 release:
  		else if (vrrp->effective_priority == VRRP_PRIO_OWNER) {
  			/* If we are configured as the address owner (priority == 255), and we receive an advertisement
  			 * from another system indicating it is also the address owner, then there is a clear conflict.
-@@ -2366,16 +2464,44 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2366,16 +2467,44 @@ open_vrrp_read_socket(sa_family_t family
  	int fd = -1;
  	int val = rx_buf_size;
  	socklen_t len = sizeof(val);
@@ -299,8 +302,8 @@ interface behaviour for the keepalived v2.2.0 release:
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Wrong AF to open read socket",
 +			ifp->ifname);
-+		return -1;
-+	}
+ 		return -1;
+ 	}
 +
 +	/* Open PF_PACKET socket, listening for
 +	 * EtherType ETHER_TYPE
@@ -310,13 +313,13 @@ interface behaviour for the keepalived v2.2.0 release:
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Could not get raw socket\n",
 +			ifp->ifname);
- 		return -1;
- 	}
++		return -1;
++	}
 +
  #if !HAVE_DECL_SOCK_CLOEXEC
  	set_sock_flags(fd, F_SETFD, FD_CLOEXEC);
  #endif
-@@ -2388,66 +2514,109 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2388,66 +2517,109 @@ open_vrrp_read_socket(sa_family_t family
  			log_message(LOG_INFO, "vrrp set receive socket buffer size error %d", errno);
  	}
  
@@ -357,7 +360,7 @@ interface behaviour for the keepalived v2.2.0 release:
 +
 +	/*
 +	 * Bind to device - have to use bind() here as we're using a
-+	 * packet socket, see https://www.systutorials.com/docs/linux/man/7-packet/
++	 * packet socket, see packet(7)
 +	 */
 +	bind_struct.sll_family = PF_PACKET;
 +	bind_struct.sll_ifindex = (int) idx;
@@ -478,7 +481,7 @@ interface behaviour for the keepalived v2.2.0 release:
  
  	/* Need to bind read socket so only process packets for interface we're
  	 * interested in.
-@@ -2455,17 +2624,12 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2455,17 +2627,12 @@ open_vrrp_read_socket(sa_family_t family
  	 * This is applicable for both unicast and multicast operation as well as
  	 * IPv4 and IPv6.
  	 */
@@ -498,7 +501,7 @@ interface behaviour for the keepalived v2.2.0 release:
  	return fd;
  }
  
-@@ -2506,6 +2670,11 @@ open_sockpool_socket(sock_t *sock)
+@@ -2506,6 +2673,11 @@ open_sockpool_socket(sock_t *sock)
  	else
  		sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
  						     sock->ifp, unicast_src_p);

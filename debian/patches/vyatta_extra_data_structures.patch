@@ -47,7 +47,7 @@
 +			freeifaddrs(global_data->local_addresses);
 +			global_data->local_addresses = NULL;
 +		}
-+		if(getifaddrs(&(global_data->local_addresses)) == -1){
++		if (getifaddrs(&(global_data->local_addresses)) == -1) {
 +			log_message(LOG_ERR, "Failed to allocate getifaddrs, %d", errno);
 +		}
 +	}
