@@ -1,0 +1,37 @@
+Minor changes to upstream tracking printing
+
+Upstream removed the macro for list counting and stopped printing the
+count in the data file reintroduced this and consolidate information
+required by vyatta for tracked interface show output into one area.
+Makes it easier for the View code to display information on vyatta.
+---
+ keepalived/vrrp/vrrp_data.c  |    6 +++++-
+ keepalived/vrrp/vrrp_track.c |    2 +-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_track.c
++++ b/keepalived/vrrp/vrrp_track.c
+@@ -54,7 +54,7 @@
+ static void
+ dump_track_if(FILE *fp, const tracked_if_t *tip)
+ {
+-	conf_write(fp, "     %s weight %d%s", IF_NAME(tip->ifp), tip->weight, tip->weight_reverse ? " reverse" : "");
++	conf_write(fp, "     name %s state %s weight %d%s", IF_NAME(tip->ifp), (IF_ISUP(tip->ifp) ? "UP" : "DOWN") , tip->weight, tip->weight_reverse ? " reverse" : "");
+ }
+ void
+ dump_track_if_list(FILE *fp, const list_head_t *l)
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -767,7 +767,11 @@ dump_vrrp(FILE *fp, const vrrp_t *vrrp)
+ #endif
+ 
+ 	if (!list_empty(&vrrp->track_ifp)) {
+-		conf_write(fp, "   Tracked interfaces :");
++		uint32_t length = 0;
++		list_head_t *e;
++		list_for_each(e, &vrrp->track_ifp)
++			++length;
++		conf_write(fp, "   Tracked interfaces = %d", length);
+ 		dump_track_if_list(fp, &vrrp->track_ifp);
+ 	}
+ 	if (!list_empty(&vrrp->track_script)) {
