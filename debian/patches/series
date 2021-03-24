@@ -46,3 +46,4 @@ vyatta_rfc_changes.patch
 #reset_groups_to_backup_on_configured_priority_change.patch
 #add_transition_to_master_timer_expired.patch
 vyatta_track_interface_changes.patch
+vyatta_dynamic_ipao_detection.patch
