@@ -52,20 +52,25 @@ interface behaviour for the keepalived v2.2.0 release:
    This stops the removal of an IP route
  * Moved code from add_effective_and_configure_prefix.patch to this patch
    after changing the effective prefix when it overlaps
+ * Removed the IPV6 cmsg code, we get the IPv6 header when using a BPF and
+   this contains the information the cmsg code was looking into. The cmsg
+   code also stopped IPv6 from working.
+ * Updated the expected length of the VRRP packets to include the IP heade
+   length.
 
 ---
  keepalived/core/keepalived_netlink.c |    9 -
  keepalived/include/vrrp_if.h         |    2 
  keepalived/include/vrrp_ipaddress.h  |    1 
  keepalived/include/vrrp_vmac.h       |    2 
- keepalived/vrrp/vrrp.c               |  314 +++++++++++++++++++++++++++--------
+ keepalived/vrrp/vrrp.c               |  307 ++++++++++++++++++++++++++---------
  keepalived/vrrp/vrrp_ipaddress.c     |   85 +++++++++
- keepalived/vrrp/vrrp_scheduler.c     |  137 ++++++++++++++-
+ keepalived/vrrp/vrrp_scheduler.c     |  160 +++++++++++++++---
  keepalived/vrrp/vrrp_track.c         |    4 
  keepalived/vrrp/vrrp_vmac.c          |   31 +++
  lib/utils.c                          |    2 
  lib/utils.h                          |    1 
- 11 files changed, 500 insertions(+), 88 deletions(-)
+ 11 files changed, 498 insertions(+), 106 deletions(-)
 
 --- a/keepalived/include/vrrp_vmac.h
 +++ b/keepalived/include/vrrp_vmac.h
@@ -191,6 +196,15 @@ interface behaviour for the keepalived v2.2.0 release:
  	}
  
  	return NULL;
+@@ -832,7 +906,7 @@ vrrp_check_packet(vrrp_t *vrrp, const vr
+ 			expected_len += sizeof(ipsec_ah_t);
+ #endif
+ 	} else if (vrrp->family == AF_INET6) {
+-		expected_len = 0;
++		expected_len = 40;
+ 	} else {
+ 		log_message(LOG_INFO, "(%s) configured address family is %d, which is neither AF_INET or AF_INET6. This is probably a bug - please report", vrrp->iname, vrrp->family);
+ 		return VRRP_PACKET_KO;
 @@ -1450,6 +1524,7 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
  	struct iovec iov;
  	char cbuf[256] __attribute__((aligned(__alignof__(struct cmsghdr))));
@@ -302,8 +316,8 @@ interface behaviour for the keepalived v2.2.0 release:
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Wrong AF to open read socket",
 +			ifp->ifname);
- 		return -1;
- 	}
++		return -1;
++	}
 +
 +	/* Open PF_PACKET socket, listening for
 +	 * EtherType ETHER_TYPE
@@ -313,13 +327,13 @@ interface behaviour for the keepalived v2.2.0 release:
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Could not get raw socket\n",
 +			ifp->ifname);
-+		return -1;
-+	}
+ 		return -1;
+ 	}
 +
  #if !HAVE_DECL_SOCK_CLOEXEC
  	set_sock_flags(fd, F_SETFD, FD_CLOEXEC);
  #endif
-@@ -2388,66 +2517,109 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2388,66 +2517,100 @@ open_vrrp_read_socket(sa_family_t family
  			log_message(LOG_INFO, "vrrp set receive socket buffer size error %d", errno);
  	}
  
@@ -364,6 +378,7 @@ interface behaviour for the keepalived v2.2.0 release:
 +	 */
 +	bind_struct.sll_family = PF_PACKET;
 +	bind_struct.sll_ifindex = (int) idx;
++	bind_struct.sll_protocol = htons(ETH_P_ALL);
 +	if (bind(fd, (struct sockaddr*)&bind_struct, sizeof(bind_struct)) == -1) {
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Failed to bind to read interface %s\n",
@@ -466,22 +481,12 @@ interface behaviour for the keepalived v2.2.0 release:
 +			ifp->ifname);
 +		close(fd);
 +		return -1;
-+	}
-+
-+	if (base_ifp) {
-+		if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE,
-+					   IF_NAME(base_ifp),((socklen_t) strlen(IF_NAME(base_ifp)) + 1))) {
-+			log_message(LOG_INFO, "can't bind to device %s. errno=%d. (try to run it as root)",
-+			    IF_NAME(base_ifp), errno);
-+			close(fd);
-+			return -1;
-+		}
  	}
 -#endif
  
  	/* Need to bind read socket so only process packets for interface we're
  	 * interested in.
-@@ -2455,17 +2627,12 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2455,17 +2618,12 @@ open_vrrp_read_socket(sa_family_t family
  	 * This is applicable for both unicast and multicast operation as well as
  	 * IPv4 and IPv6.
  	 */
@@ -501,7 +506,7 @@ interface behaviour for the keepalived v2.2.0 release:
  	return fd;
  }
  
-@@ -2506,6 +2673,11 @@ open_sockpool_socket(sock_t *sock)
+@@ -2506,6 +2664,11 @@ open_sockpool_socket(sock_t *sock)
  	else
  		sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
  						     sock->ifp, unicast_src_p);
@@ -722,7 +727,7 @@ interface behaviour for the keepalived v2.2.0 release:
  			break;
  
  		/* Defense strategy here is to handle no more than one advert
-@@ -973,13 +1029,23 @@ vrrp_dispatcher_read(sock_t *sock)
+@@ -973,29 +1029,28 @@ vrrp_dispatcher_read(sock_t *sock)
  		vrrp->pkt_saddr = src_addr;
  		vrrp->rx_ttl_hop_limit = -1;           /* Default to not received */
  		if (sock->family == AF_INET) {
@@ -730,12 +735,32 @@ interface behaviour for the keepalived v2.2.0 release:
 +			iph = PTR_CAST(struct iphdr, eth_payload);
  			vrrp->multicast_pkt = IN_MULTICAST(htonl(iph->daddr));
  			vrrp->rx_ttl_hop_limit = iph->ttl;
- 		} else
- 			vrrp->multicast_pkt = false;
+-		} else
+-			vrrp->multicast_pkt = false;
++		} else {
++			ip6h = PTR_CAST(struct ip6_hdr, eth_payload);
++			vrrp->rx_ttl_hop_limit = ip6h->ip6_ctlun.ip6_un1.ip6_un1_hlim;
++			vrrp->multicast_pkt = IN6_IS_ADDR_MULTICAST(&ip6h->ip6_dst);
++		}
  		for (cmsg = CMSG_FIRSTHDR(&msghdr); cmsg; cmsg = CMSG_NXTHDR(&msghdr, cmsg)) {
  			expected_cmsg = false;
+-			if (cmsg->cmsg_level == IPPROTO_IPV6) {
 +			if (cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
-+				expected_cmsg = true;
+ 				expected_cmsg = true;
+-
+-#ifdef IPV6_RECVHOPLIMIT
+-				if (cmsg->cmsg_type == IPV6_HOPLIMIT &&
+-				    cmsg->cmsg_len - sizeof(struct cmsghdr) == sizeof(unsigned int))
+-					vrrp->rx_ttl_hop_limit = *PTR_CAST(unsigned int, CMSG_DATA(cmsg));
+-				else
+-#endif
+-#ifdef IPV6_RECVPKTINFO
+-				if (cmsg->cmsg_type == IPV6_PKTINFO &&
+-				    cmsg->cmsg_len - sizeof(struct cmsghdr) == sizeof(struct in6_pktinfo))
+-					vrrp->multicast_pkt = IN6_IS_ADDR_MULTICAST(&(PTR_CAST(struct in6_pktinfo, CMSG_DATA(cmsg)))->ipi6_addr);
+-				else
+-#endif
+-					expected_cmsg = false;
 +				auxdata = (struct tpacket_auxdata *)CMSG_DATA(cmsg);
 +				if ((auxdata->tp_status & TP_STATUS_VLAN_TPID_VALID) != 0) {
 +					// Packets that have VLAN tags are not destined for us, the control plane strips them before
@@ -744,10 +769,12 @@ interface behaviour for the keepalived v2.2.0 release:
 +					break;
 +				}
 +			}
- 			if (cmsg->cmsg_level == IPPROTO_IPV6) {
- 				expected_cmsg = true;
- 
-@@ -1044,12 +1110,67 @@ vrrp_dispatcher_read(sock_t *sock)
++			if (cmsg->cmsg_level == IPPROTO_IPV6) {
++				expected_cmsg = false;
+ 			}
+ #ifdef _NETWORK_TIMESTAMP_
+ 			else if (do_network_timestamp && cmsg->cmsg_level == SOL_SOCKET) {
+@@ -1044,12 +1099,67 @@ vrrp_dispatcher_read(sock_t *sock)
  		}
  #endif
  
