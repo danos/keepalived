@@ -1,3 +1,10 @@
+keepalived (1.2.24-git66c870aa+vyatta36) unstable; urgency=medium
+
+  [ Nicholas Brown ]
+  * dh-systemd is part of debhelper
+
+ -- Colin Docherty <colin.docherty@att.com>  Tue, 13 Apr 2021 14:19:06 +0100
+
 keepalived (1.2.24-git66c870aa+vyatta35) unstable; urgency=medium
 
   * Security/Allow configuration of tmp files path
