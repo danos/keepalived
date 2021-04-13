@@ -1,0 +1,180 @@
+Allow VRRP groups to be reset to backup through DBus calls
+
+Currently there's no easy way to reset a VRRP group's state to BACKUP from
+MASTER, this can be useful for forcing a failover for testing.
+This patch introduces a DBus method call that can be used to reset group state
+to BACKUP.
+There's a side effect when a SyncGroup is used if one group changes state all
+of the VRRP groups in the SyncGroup should switch state as well. This requires
+an additional boolean argument to vrrp_sync_backup() for other members of the
+SyncGroup to send a resign (zero priority) packet and move to BACKUP.
+
+---
+ keepalived/dbus/org.keepalived.Vrrp1.Instance.xml |    8 ++++
+ keepalived/include/vrrp_notify.h                  |    1 
+ keepalived/include/vrrp_sync.h                    |    2 -
+ keepalived/vrrp/vrrp_dbus.c                       |   36 ++++++++++++++++++++++
+ keepalived/vrrp/vrrp_notify.c                     |    2 -
+ keepalived/vrrp/vrrp_scheduler.c                  |    2 -
+ keepalived/vrrp/vrrp_sync.c                       |    4 +-
+ 7 files changed, 50 insertions(+), 5 deletions(-)
+
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Instance.xml
+@@ -17,6 +17,14 @@
+ 	<method name='SendGarp'>
+ 	</method>
+ 	<!--
++	  ResetMaster:
++
++	  Resets group to BACKUP if it's MASTER.
++	-->
++	<method name='ResetMaster'>
++	</method>
++
++	<!--
+ 	  VrrpStatusChange:
+ 	  @status: numerical value defining the state.
+ 
+--- a/keepalived/include/vrrp_notify.h
++++ b/keepalived/include/vrrp_notify.h
+@@ -32,5 +32,6 @@ extern void send_instance_notifies(vrrp_
+ extern void send_group_notifies(vrrp_sgroup_t *);
+ extern void send_instance_priority_notifies(vrrp_t *);
+ extern void notify_shutdown(void);
++extern void vrrp_smtp_notifier(vrrp_t *);
+ 
+ #endif
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -65,6 +65,7 @@
+ 
+ #include "vrrp_dbus.h"
+ #include "vrrp_data.h"
++#include "vrrp_notify.h"
+ #include "vrrp_print.h"
+ #include "vrrp_sync.h"
+ #include "global_data.h"
+@@ -87,6 +88,7 @@ typedef enum dbus_action {
+ 	DBUS_DESTROY_INSTANCE,
+ #endif
+ 	DBUS_SEND_GARP,
++	DBUS_RESET_MASTER,
+ 	DBUS_GET_NAME,
+ 	DBUS_GET_STATUS,
+ 	DBUS_GET_XMIT,
+@@ -101,6 +103,7 @@ typedef enum dbus_error {
+ 	DBUS_OBJECT_ALREADY_EXISTS,
+ 	DBUS_INTERFACE_TOO_LONG,
+ 	DBUS_INSTANCE_NOT_FOUND,
++	DBUS_GROUP_NOT_MASTER,
+ } dbus_error_t;
+ 
+ typedef struct dbus_queue_ent {
+@@ -312,6 +315,8 @@ process_method_call(dbus_queue_ent_t *en
+ 		else if (ent->reply == DBUS_INSTANCE_NOT_FOUND) {
+ 			g_variant_get(ent->args, "(s)", &iname);
+ 			log_message(LOG_INFO, "Unable to find DBus requested instance %s", iname);
++		} else if (ent->reply == DBUS_GROUP_NOT_MASTER) {
++			log_message(LOG_INFO, "Dbus group is not master, can't switch");
+ 		}
+ 		else
+ 			log_message(LOG_INFO, "Unknown DBus reply %d", ent->reply);
+@@ -499,6 +504,17 @@ handle_method_call(__attribute__((unused
+ 				g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS, "Instance '%s/%d/%s' not found", ifname_str, ent.vrid, family_str(ent.family));
+ 			else
+ 				g_dbus_method_invocation_return_value(invocation, NULL);
++		} else if (!g_strcmp0(method_name, "ResetMaster")) {
++			get_interface_ids(object_path, ifname_str, &ent.vrid, &ent.family);
++			ent.action = DBUS_RESET_MASTER;
++			ent.ifname = ifname_str;
++			process_method_call(&ent);
++			if (ent.reply == DBUS_INTERFACE_NOT_FOUND)
++				g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS, "Instance '%s/%d/%s' not found", ifname_str, ent.vrid, family_str(ent.family));
++			else if (ent.reply == DBUS_GROUP_NOT_MASTER)
++				g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS, "Instance '%s/%d/%s' is not MASTER, no reset happening", ifname_str, ent.vrid, family_str(ent.family));
++			else
++				g_dbus_method_invocation_return_value(invocation, NULL);
+ 		} else {
+ 			log_message(LOG_INFO, "Method %s has not been implemented yet", method_name);
+ 			g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_MATCH_RULE_NOT_FOUND, "Method not implemented");
+@@ -880,6 +896,26 @@ handle_dbus_msg(__attribute__((unused))
+ 				ent->reply = DBUS_SUCCESS;
+ 			}
+ 		}
++		else if (ent->action == DBUS_RESET_MASTER) {
++			ent->reply = DBUS_INTERFACE_NOT_FOUND;
++			vrrp = get_vrrp_instance(ent->ifname, ent->vrid, ent->family);
++			if (vrrp) {
++				if (vrrp->state != VRRP_STATE_MAST) {
++					log_message(LOG_INFO, "VRRP_Instance(%s) is not master, can't reset it", vrrp->iname);
++					ent->reply = DBUS_GROUP_NOT_MASTER;
++				} else {
++					vrrp->wantstate = VRRP_STATE_BACK;
++					vrrp_state_leave_master(vrrp, true);
++					vrrp_init_instance_sands(vrrp);
++					if (vrrp->sync != NULL)
++						vrrp_sync_backup(vrrp, true);
++					else
++						vrrp_smtp_notifier(vrrp);
++					ent->reply = DBUS_SUCCESS;
++				}
++			}
++		}
++
+ 		else if (ent->action == DBUS_GET_NAME ||
+ 			 ent->action == DBUS_GET_STATUS ||
+ 			 ent->action == DBUS_GET_XMIT ||
+--- a/keepalived/vrrp/vrrp_notify.c
++++ b/keepalived/vrrp/vrrp_notify.c
+@@ -191,7 +191,7 @@ notify_script_exec(notify_script_t* scri
+ }
+ 
+ /* SMTP alert notifier */
+-static void
++void
+ vrrp_smtp_notifier(vrrp_t * vrrp)
+ {
+ 	if (vrrp->smtp_alert &&
+--- a/keepalived/include/vrrp_sync.h
++++ b/keepalived/include/vrrp_sync.h
+@@ -37,7 +37,7 @@
+ extern vrrp_t *vrrp_get_instance(char *) __attribute__ ((pure));
+ extern bool vrrp_sync_set_group(vrrp_sgroup_t *);
+ extern bool vrrp_sync_can_goto_master(vrrp_t *);
+-extern void vrrp_sync_backup(vrrp_t *);
++extern void vrrp_sync_backup(vrrp_t *, bool resign);
+ extern void vrrp_sync_master(vrrp_t *);
+ extern void vrrp_sync_fault(vrrp_t *);
+ 
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -713,7 +713,7 @@ try_up_instance(vrrp_t *vrrp, bool leavi
+ 		if (vrrp->state == VRRP_STATE_MAST)
+ 			vrrp_sync_master(vrrp);
+ 		else
+-			vrrp_sync_backup(vrrp);
++			vrrp_sync_backup(vrrp, false);
+ 	}
+ }
+ 
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -139,7 +139,7 @@ vrrp_sync_can_goto_master(vrrp_t *vrrp)
+ }
+ 
+ void
+-vrrp_sync_backup(vrrp_t *vrrp)
++vrrp_sync_backup(vrrp_t *vrrp, bool resign)
+ {
+ 	vrrp_sgroup_t *sgroup = vrrp->sync;
+ 	vrrp_t *isync;
+@@ -163,7 +163,7 @@ vrrp_sync_backup(vrrp_t *vrrp)
+ 			vrrp_state_leave_fault(isync);
+ 		}
+ 		else
+-			vrrp_state_leave_master(isync, false);
++			vrrp_state_leave_master(isync, resign);
+ 		vrrp_thread_requeue_read(isync);
+ 	}
+ 
