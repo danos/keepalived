@@ -1,0 +1,921 @@
+Add IPv4 routes as trackable objects
+
+Added IPv4 routes as a trackable object, tracking routes can be useful for
+switching MASTER state if one group can reach a particular network.
+To accomplish this we listen for netlink messages for routes being added or
+deleted and adjust states and priorities as appropriate.
+
+This addition follows a similar pattern as the existing upstream object tracking
+with a structure containing the object we're tracking and the weighting for this
+object, if any, being attached to the VRRP group that is tracking the object.
+There's a deviation from the upstream code in how the complete set of objects
+are tracked, instead of a list of all objects (Upstream) the objects are kept
+in a Hashmap (provided by glib) and accessed using the route/mask combination
+of the route. Apart from this change the flow is the same:
+
+ * Seed initial value (from cold start or restart)
+ * Listen for changes to object
+   - Modify the is_up boolean
+   - If the weight is nonzero modify priority and normalize
+   - Else modify state to FAULT
+ * Listen for changes and repeat
+
+There are two vyatta specific changes for tracking routes.
+The first is a modification to the existing netlink route code, Upstream is only
+looking for routes that have been added be keepalived this existing code had
+been hidden in an if branch and the new netlink route code added as the else
+branch.
+The second is zeroing the weight of tracked interfaces and tracked routes for
+VRRP groups that are part of a Sync Group. This is to keep expected
+functionality with previous releases, Sync Groups should only change states
+not modify priority.
+
+---
+ keepalived/core/keepalived_netlink.c    |  212 ++++++++++++++++++++++++++-----
+ keepalived/include/keepalived_netlink.h |   12 +
+ keepalived/include/vrrp.h               |    3 
+ keepalived/include/vrrp_data.h          |    9 +
+ keepalived/include/vrrp_track.h         |   24 +++
+ keepalived/vrrp/vrrp.c                  |    3 
+ keepalived/vrrp/vrrp_daemon.c           |    5 
+ keepalived/vrrp/vrrp_data.c             |   76 +++++++++++
+ keepalived/vrrp/vrrp_parser.c           |   10 +
+ keepalived/vrrp/vrrp_sync.c             |   24 +++
+ keepalived/vrrp/vrrp_track.c            |  213 ++++++++++++++++++++++++++++++++
+ 11 files changed, 554 insertions(+), 37 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -559,6 +559,10 @@ free_vrrp(vrrp_t *vrrp)
+ #ifdef _WITH_BFD_
+ 	free_track_bfd_list(&vrrp->track_bfd);
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++	// Free the list, the elements should be freed from the global hash map
++	free_track_route_list(&vrrp->track_route);
++#endif
+ 	free_unicast_peer_list(&vrrp->unicast_peer);
+ 	free_ipaddress_list(&vrrp->vip);
+ 	free_ipaddress_list(&vrrp->evip);
+@@ -796,6 +800,16 @@ dump_vrrp(FILE *fp, const vrrp_t *vrrp)
+ 		dump_tracked_bfd_list(fp, &vrrp->track_bfd);
+ 	}
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++	if (!list_empty(&vrrp->track_route)) {
++		uint32_t length = 0;
++		list_head_t *e;
++		list_for_each(e, &vrrp->track_route)
++			++length;
++		conf_write(fp, "   Tracked routes = %d", length);
++		dump_track_route_list(fp, &vrrp->track_route);
++	}
++#endif
+ 
+ 	conf_write(fp, "   Using smtp notification = %s", vrrp->smtp_alert ? "yes" : "no");
+ 
+@@ -902,6 +916,9 @@ alloc_vrrp(const char *iname)
+ #ifdef _WITH_BFD_
+ 	INIT_LIST_HEAD(&new->track_bfd);
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++	INIT_LIST_HEAD(&new->track_route);
++#endif
+ 	INIT_LIST_HEAD(&new->vip);
+ 	INIT_LIST_HEAD(&new->evip);
+ #ifdef _HAVE_FIB_ROUTING_
+@@ -1045,6 +1062,16 @@ alloc_vrrp_track_bfd(const vector_t *str
+ }
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++void
++alloc_vrrp_track_route(const vector_t *strvec)
++{
++	vrrp_t *vrrp = list_last_entry(&vrrp_data->vrrp, vrrp_t, e_list);
++
++	alloc_track_route(vrrp->iname, &vrrp->track_route, strvec);
++}
++#endif
++
+ void
+ alloc_vrrp_group_track_if(const vector_t *strvec)
+ {
+@@ -1231,13 +1258,56 @@ alloc_vrrp_data(void)
+ 	INIT_LIST_HEAD(&new->vrrp_track_bfds);
+ #endif
+ 	INIT_LIST_HEAD(&new->vrrp_socket_pool);
++#ifdef _HAVE_FIB_ROUTING_
++	new->vrrp_tracked_routes = g_hash_table_new(g_str_hash, g_str_equal);
++#endif
+ 
+ 	return new;
+ }
+ 
++#ifdef _HAVE_FIB_ROUTING_
++static void
++free_hash_table_entries(gpointer key, gpointer value, gpointer user_data)
++{
++	g_free(value);
++	g_free(key);
++}
++
++static void
++dump_route_to(gpointer key, gpointer value, gpointer user_data)
++{
++	char * route_key = (char *)key;
++	route_to_t * route_value = (route_to_t *)value;
++	FILE *fp = (FILE *)user_data;
++	uint8_t family = route_value->network.ss_family;
++	uint8_t family_size = (family == AF_INET)? INET_ADDRSTRLEN: INET6_ADDRSTRLEN;
++	char dump_network_str[family_size+1];
++	memset(dump_network_str, 0, family_size+1);
++	if (family == AF_INET) {
++		inet_ntop(family, &(((struct sockaddr_in *)&(route_value->network))->sin_addr), dump_network_str, family_size);
++	} else {
++		inet_ntop(family, &(((struct sockaddr_in6 *)&(route_value->network))->sin6_addr), dump_network_str, family_size);
++	}
++
++	conf_write(fp, "    name %s/%d state %s", dump_network_str, route_value->prefix,
++					(route_value->is_up? "UP": "DOWN"));
++}
++
++static void
++dump_tracked_routes(FILE *fp, GHashTable * route_map)
++{
++	g_hash_table_foreach(route_map, (GHFunc)dump_route_to, (gpointer)fp);
++}
++#endif
++
+ void
+ free_vrrp_data(vrrp_data_t * data)
+ {
++#ifdef _HAVE_FIB_ROUTING_
++	g_hash_table_foreach(data->vrrp_tracked_routes, (GHFunc)free_hash_table_entries, NULL);
++	g_hash_table_destroy(data->vrrp_tracked_routes);
++#endif
++
+ 	free_ipaddress_list(&data->static_addresses);
+ #ifdef _HAVE_FIB_ROUTING_
+ 	free_iproute_list(&data->static_routes);
+@@ -1310,6 +1380,12 @@ dump_vrrp_data(FILE *fp, const vrrp_data
+ 		dump_vrrp_tracked_bfd_list(fp, &data->vrrp_track_bfds);
+ 	}
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++	if (data->vrrp_tracked_routes != NULL && g_hash_table_size(data->vrrp_tracked_routes) > 0) {
++		conf_write(fp, "------< VRRP Tracked Routes >------");
++		dump_tracked_routes(fp, data->vrrp_tracked_routes);
++	}
++#endif
+ }
+ 
+ void
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -776,6 +776,13 @@ vrrp_track_bfd_handler(const vector_t *s
+ 	alloc_value_block(alloc_vrrp_track_bfd, strvec);
+ }
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++static void
++vrrp_track_route_handler(const vector_t *strvec)
++{
++	alloc_value_block(alloc_vrrp_track_route, strvec);
++}
++#endif
+ static void
+ vrrp_srcip_handler(const vector_t *strvec)
+ {
+@@ -1923,6 +1930,9 @@ init_vrrp_keywords(bool active)
+ #ifdef _WITH_BFD_
+ 	install_keyword("track_bfd", &vrrp_track_bfd_handler);
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++	install_keyword("track_route_to", &vrrp_track_route_handler);
++#endif
+ 	install_keyword("mcast_src_ip", &vrrp_srcip_handler);
+ 	install_keyword("unicast_src_ip", &vrrp_srcip_handler);
+ 	install_keyword("track_src_ip", &vrrp_track_srcip_handler);
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -27,6 +27,9 @@
+ #include <sys/types.h>
+ #include <stdio.h>
+ #include <stdbool.h>
++#ifdef _HAVE_FIB_ROUTING_
++#include <gmodule.h>
++#endif
+ 
+ /* local includes */
+ #include "list_head.h"
+@@ -55,6 +58,9 @@ typedef struct _vrrp_data {
+ 	list_head_t		vrrp_track_bfds;	/* vrrp_tracked_bfd_t */
+ #endif
+ 	unsigned		num_smtp_alert;		/* No of smtp_alerts configured */
++#ifdef _HAVE_FIB_ROUTING_
++	GHashTable 		*vrrp_tracked_routes;
++#endif
+ } vrrp_data_t;
+ 
+ /* Global Vars exported */
+@@ -94,6 +100,9 @@ extern void alloc_vrrp_group_track_proce
+ #ifdef _WITH_BFD_
+ extern void alloc_vrrp_group_track_bfd(const vector_t *);
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++extern void alloc_vrrp_track_route(const vector_t *);
++#endif
+ extern void alloc_vrrp_vip(const vector_t *);
+ extern void alloc_vrrp_evip(const vector_t *);
+ extern void alloc_vrrp_vroute(const vector_t *);
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -241,6 +241,9 @@ typedef struct _vrrp_t {
+ #ifdef _WITH_BFD_
+ 	list_head_t		track_bfd;		/* tracked_bfd_t - BFD instance state we monitor */
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++	list_head_t		track_route;	/* tracked_route_t - Route whose value we monitor */
++#endif
+ 	unsigned		num_script_if_fault;	/* Number of scripts and interfaces in fault state */
+ 	unsigned		num_script_init;	/* Number of scripts in init state */
+ 	bool			notifies_sent;		/* Set when initial notifies have been sent */
+--- a/keepalived/include/vrrp_track.h
++++ b/keepalived/include/vrrp_track.h
+@@ -176,6 +176,23 @@ typedef struct _tracked_bfd {
+ } tracked_bfd_t;
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++typedef struct _route_to {
++	struct sockaddr_storage 	network;	/* Network */
++	uint32_t				 	prefix;		/* Prefix */
++	bool 						is_up;		/* Route is in the RIB */
++} route_to_t;
++
++typedef struct _tracked_route {
++	int				weight;			/* Tracking weight when non-zero */
++	bool			weight_reverse; /* Which direction is the weight applied */
++	route_to_t		*route;			/* Route backpointer, cannot be NULL */
++
++	/* linked list member */
++	list_head_t		e_list;
++} tracked_route_t;
++#endif
++
+ /* Forward references */
+ struct _vrrp_t;
+ struct _vrrp_sgroup;
+@@ -202,6 +219,13 @@ extern void free_track_bfd(tracked_bfd_t
+ extern void free_track_bfd_list(list_head_t *);
+ extern void alloc_track_bfd(const char *, list_head_t *, const vector_t *);
+ #endif
++#ifdef _HAVE_FIB_ROUTING_
++extern void dump_track_route_list(FILE *, const list_head_t *);
++extern void free_track_route(tracked_route_t *);
++extern void free_track_route_list(list_head_t *);
++extern void alloc_track_route(const char *, list_head_t *, const vector_t *);
++extern void update_route_priorities(struct _vrrp_t *, route_to_t *);
++#endif
+ extern vrrp_script_t *find_script_by_name(const char *) __attribute__ ((pure));
+ extern void update_script_priorities(vrrp_script_t *, bool);
+ extern void down_instance(struct _vrrp_t *);
+--- a/keepalived/vrrp/vrrp_track.c
++++ b/keepalived/vrrp/vrrp_track.c
+@@ -536,6 +536,157 @@ alloc_track_bfd(const char *name, list_h
+ }
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++/* Track route dump */
++static void
++dump_track_route(FILE *fp, const tracked_route_t *tr)
++{
++	tracked_route_t *troute = tr;
++	route_to_t * route = troute->route;
++	uint8_t family = route->network.ss_family;
++	uint8_t family_size = (family == AF_INET)? INET_ADDRSTRLEN: INET6_ADDRSTRLEN;
++	char dump_network_str[family_size+1];
++	memset(dump_network_str, 0, family_size+1);
++	if (family == AF_INET) {
++		inet_ntop(family, &(((struct sockaddr_in *)&(route->network))->sin_addr), dump_network_str, family_size);
++	} else {
++		inet_ntop(family, &(((struct sockaddr_in6 *)&(route->network))->sin6_addr), dump_network_str, family_size);
++	}
++
++	conf_write(fp, "     name %s/%d state %s weight %d%s",
++					dump_network_str, troute->route->prefix,
++					(troute->route->is_up? "UP": "DOWN"),
++					troute->weight,
++					troute->weight_reverse ? " reverse" : "");
++}
++void
++dump_track_route_list(FILE *fp, const list_head_t *l)
++{
++	tracked_route_t *tr;
++
++	list_for_each_entry(tr, l, e_list)
++		dump_track_route(fp, tr);
++}
++
++void
++free_track_route(tracked_route_t *tr)
++{
++	list_del_init(&tr->e_list);
++	FREE(tr);
++}
++void
++free_track_route_list(list_head_t *l)
++{
++	tracked_route_t *tr, *tr_tmp;
++
++	list_for_each_entry_safe(tr, tr_tmp, l, e_list)
++		free_track_route(tr);
++}
++
++/*
++ * Function to define structures for specific tracked routes.
++ * The contents of a structure is obtained from parsing the string vector read
++ * from the keepalived.conf file. The config line's structure is;
++ * network/prefix [weight (-254..+254)]
++ * The weight key word is optional.
++ */
++void
++alloc_track_route(const char *name, list_head_t *l, const vector_t *strvec)
++{
++	tracked_route_t * troute = NULL;
++	route_to_t * route = NULL;
++	bool reverse = false;
++	int weight = 0;
++	char *vector = vector_slot(strvec, 0);
++	char route_to_config[INET6_ADDRSTRLEN+10];
++	memset(route_to_config, 0, sizeof(route_to_config));
++	strncpy(route_to_config, vector, strlen(vector));
++
++	if (vector_size(strvec) >= 2) {
++		if (strcmp(strvec_slot(strvec, 1), "weight")) {
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) unknown track_route %s"
++								  " option %s - ignoring"
++								, name, route_to_config, strvec_slot(strvec, 1));
++			return;
++		}
++
++		if (vector_size(strvec) == 2) {
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) weight without value specified"
++								  " for track_route %s - ignoring"
++								, name, route_to_config);
++			return;
++		}
++
++		if (!read_int_strvec(strvec, 2, &weight, -254, 254, true)) {
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) weight %s for %s must be"
++								  " between [-253..253] inclusive. Ignoring..."
++								, name, strvec_slot(strvec, 2), route_to_config);
++			weight = 0;
++		}
++		else if (weight == -254 || weight == 254) {
++			/* This check can be removed once users have migrated away from +/-254 */
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) weight for %s cannot be +/-254."
++								  " Setting to +/-253"
++								, name, route_to_config);
++			weight = weight == -254 ? -253 : 253;
++		}
++
++		if (vector_size(strvec) >= 4) {
++			if (!strcmp(strvec_slot(strvec, 3), "reverse"))
++				reverse = true;
++			else
++				report_config_error(CONFIG_GENERAL_ERROR, "(%s) unknown track_route %s"
++									  " weight option %s - ignoring"
++									, name, route_to_config, strvec_slot(strvec, 3));
++		}
++	}
++
++	if (vrrp_data->vrrp_tracked_routes != NULL){
++		if (!g_hash_table_lookup_extended(vrrp_data->vrrp_tracked_routes, route_to_config, NULL, (void *)&route)) {
++			char network_str[INET6_ADDRSTRLEN];
++			char *prefix_str;
++			char * route_to_dup;
++			uint8_t family;
++
++			route_to_dup = strndup(route_to_config, sizeof(route_to_config));
++
++			if (!(prefix_str = strchr(route_to_dup, '/'))) {
++				log_message(LOG_ERR, "Route configured with out prefix, this is an error");
++				free(route_to_dup);
++				return;
++			}
++			*prefix_str = '\0';
++			prefix_str++;
++			strcpy(network_str, route_to_dup);
++			family = (strchr(network_str, ':')) ? AF_INET6 : AF_INET;
++
++			route = MALLOC(sizeof(route_to_t));
++			if (family == AF_INET6){
++				struct sockaddr_in6 * tmp_socks;
++				tmp_socks = (struct sockaddr_in6 *)&(route->network);
++				tmp_socks->sin6_family = family;
++				inet_pton(family, network_str, &(tmp_socks->sin6_addr));
++			} else {
++				struct sockaddr_in * tmp_socks;
++				tmp_socks = (struct sockaddr_in *)&(route->network);
++				tmp_socks->sin_family = family;
++				inet_pton(family, network_str, &(tmp_socks->sin_addr));
++			}
++			route->prefix = atoi(prefix_str);
++			route->is_up = false;
++			g_hash_table_insert(vrrp_data->vrrp_tracked_routes, g_strdup(route_to_config), route);
++			free(route_to_dup);
++		}
++	}
++	PMALLOC(troute);
++	INIT_LIST_HEAD(&troute->e_list);
++	troute->route    = route;
++	troute->weight = weight;
++	troute->weight_reverse = reverse;
++
++	list_add_tail(&troute->e_list, l);
++}
++#endif
+ void
+ down_instance(vrrp_t *vrrp)
+ {
+@@ -708,6 +859,31 @@ initialise_track_bfd_state(tracked_bfd_t
+ }
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++static void
++initialise_track_route_state(tracked_route_t *tr, vrrp_t *vrrp)
++{
++	int multiplier = tr->weight_reverse ? -1 : 1;
++
++	if (tr->weight) {
++		if (tr->route->is_up) {
++			if (tr->weight > 0)
++				vrrp->total_priority += tr->weight * multiplier;
++		} else {
++			if (tr->weight < 0)
++				vrrp->total_priority += tr->weight * multiplier;
++			else if (!tr->weight) {
++				vrrp->num_script_if_fault++;
++				vrrp->state = VRRP_STATE_FAULT;
++			}
++		}
++	} else if (tr->route->is_up == tr->weight_reverse) {
++		vrrp->num_script_if_fault++;
++		vrrp->state = VRRP_STATE_FAULT;
++	}
++}
++#endif
++
+ static void
+ initialise_interface_tracking_priorities(void)
+ {
+@@ -812,6 +988,10 @@ initialise_vrrp_tracking_priorities(vrrp
+ 	tracked_bfd_t *tbfd;
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++	tracked_route_t *tr;
++#endif
++
+ 	/* If no src address has been specified, and the interface doesn't have
+ 	 * an appropriate address, put the interface into fault state */
+ 	if (vrrp->saddr.ss_family == AF_UNSPEC) {
+@@ -832,6 +1012,12 @@ initialise_vrrp_tracking_priorities(vrrp
+ 		initialise_track_bfd_state(tbfd, vrrp);
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++	/* Initialise the VRRP instance's tracked routes */
++	list_for_each_entry(tr, &vrrp->track_route, e_list)
++		initialise_track_route_state(tr, vrrp);
++#endif
++
+ 	/* If have a sync group, initialise it's tracked scripts and bfds */
+ 	if (vrrp->sync) {
+ 		list_for_each_entry(tsc, &vrrp->sync->track_script, e_list)
+@@ -906,4 +1092,31 @@ process_update_track_process_status(vrrp
+ 		}
+ 	}
+ }
++#endif
++
++#ifdef _HAVE_FIB_ROUTING_
++void
++update_route_priorities(vrrp_t *vrrp, route_to_t *route)
++{
++	tracked_route_t *tr;
++	log_message(LOG_DEBUG, "Updating a tracked route for %s", vrrp->iname);
++
++	list_for_each_entry(tr, &vrrp->track_route, e_list) {
++		if (tr->route == route) {
++			if(!tr->weight) {
++				if (tr->route->is_up)
++					try_up_instance(vrrp, false);
++				else
++					down_instance(vrrp);
++			}
++			else if (vrrp->base_priority != VRRP_PRIO_OWNER) {
++				if ((tr->weight > 0) == tr->route->is_up)
++					vrrp->total_priority += tr->weight;
++				else
++					vrrp->total_priority -= tr->weight;
++				vrrp_set_effective_priority(vrrp);
++			}
++		}
++	}
++}
+ #endif
+--- a/keepalived/core/keepalived_netlink.c
++++ b/keepalived/core/keepalived_netlink.c
+@@ -1394,6 +1394,9 @@ netlink_parse_info(int (*filter) (struct
+ 			    h->nlmsg_type != RTM_NEWLINK &&
+ 			    h->nlmsg_type != RTM_DELLINK &&
+ 			    h->nlmsg_type != RTM_NEWROUTE &&
++#ifdef _HAVE_FIB_ROUTING_
++			    h->nlmsg_type != RTM_DELROUTE &&
++#endif
+ 			    nl != &nl_cmd && h->nlmsg_pid == nl_cmd.nl_pid)
+ 				continue;
+ #endif
+@@ -2215,11 +2218,28 @@ netlink_link_filter(__attribute__((unuse
+ }
+ 
+ #ifdef _HAVE_FIB_ROUTING_
++static void
++update_route_tracking_vrrp(route_to_t *route)
++{
++	vrrp_t *vrrp;
++	tracked_route_t *tr;
++
++	list_for_each_entry(vrrp, &vrrp_data->vrrp, e_list) {
++		if (!list_empty(&vrrp->track_route)) {
++			list_for_each_entry(tr, &vrrp->track_route, e_list) {
++				if (tr->route == route) {
++					update_route_priorities(vrrp, route);
++				}
++			}
++		}
++	}
++}
++
+ static int
+ netlink_route_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlmsghdr *h)
+ {
+ 	struct rtmsg *rt;
+-	struct rtattr *tb[RTA_MAX + 1];
++	struct rtattr *tb[RTN_MAX + 1];
+ 	size_t len;
+ 	vrrp_t *vrrp;
+ 	ip_route_t *route;
+@@ -2227,58 +2247,97 @@ netlink_route_filter(__attribute__((unus
+ 	if (h->nlmsg_type != RTM_NEWROUTE && h->nlmsg_type != RTM_DELROUTE)
+ 		return 0;
+ 
+-	if (h->nlmsg_len < NLMSG_LENGTH(sizeof(*rt)))
++	if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct rtmsg)))
+ 		return -1;
+ 
+-	rt = NLMSG_DATA(h);
+-
+-	if (rt->rtm_protocol != RTPROT_KEEPALIVED) {
+-		/* It is not a route we are monitoring - ignore it */
+-		return 0;
+-	}
+-
++	rt = (struct rtmsg *)NLMSG_DATA(h);
+ 	/* Only IPv4 and IPv6 are valid for us */
+ 	if (rt->rtm_family != AF_INET && rt->rtm_family != AF_INET6)
+ 		return 0;
+ 
+ 	len = h->nlmsg_len - NLMSG_LENGTH(sizeof (struct rtmsg));
+ 
+-	parse_rtattr(tb, RTA_MAX, RTM_RTA(rt), len);
++	parse_rtattr(tb, RTN_MAX, RTM_RTA(rt), len);
+ 
+-	if (!(route = route_is_ours(rt, tb, &vrrp)))
+-		return 0;
++	if (rt->rtm_protocol == RTPROT_KEEPALIVED) {
++		/* Keepalived specific route? */
++
++		if (!(route = route_is_ours(rt, tb, &vrrp)))
++			return 0;
+ 
+-	route->set = (h->nlmsg_type == RTM_NEWROUTE);
++		route->set = (h->nlmsg_type == RTM_NEWROUTE);
+ 
+-	/* Matching route */
+-	if (h->nlmsg_type == RTM_NEWROUTE) {
+-		/* If we haven't specified a dev for the route, save the link the route
+-		 * has been added to. */
+-		if (tb[RTA_OIF]) {
+-			route->configured_ifindex = *PTR_CAST(uint32_t, RTA_DATA(tb[RTA_OIF]));
+-			if (route->oif && route->oif->ifindex != route->configured_ifindex)
+-				log_message(LOG_INFO, "route added index %" PRIu32 " != config index %u", route->configured_ifindex, route->oif->ifindex);
++		/* Matching route */
++		if (h->nlmsg_type == RTM_NEWROUTE) {
++			/* If we haven't specified a dev for the route, save the link the route
++			 * has been added to. */
++			if (tb[RTA_OIF]) {
++				route->configured_ifindex = *PTR_CAST(uint32_t, RTA_DATA(tb[RTA_OIF]));
++				if (route->oif && route->oif->ifindex != route->configured_ifindex)
++					log_message(LOG_INFO, "route added index %" PRIu32 " != config index %u", route->configured_ifindex, route->oif->ifindex);
++			}
++			else
++				log_message(LOG_INFO, "New route doesn't have i/f index");
++
++			return 0;
+ 		}
+-		else
+-			log_message(LOG_INFO, "New route doesn't have i/f index");
+ 
+-		return 0;
+-	}
++		/* We are only interested in route deletions now */
++
++		if (route->dont_track)
++			return 0;
+ 
+-	/* We are only interested in route deletions now */
++		if (vrrp) {
++			if (vrrp->state != VRRP_STATE_MAST)
++				return 0;
++
++			set_vrrp_backup(vrrp);
++		}
++		else
++			reinstate_static_route(route);
+ 
+-	if (route->dont_track)
+ 		return 0;
++	} else {
++		/* Route addition/deletion in the FIB that we may be tracking */
++		if (tb[RTA_DST] != NULL) {
++			route_to_t * route_to = NULL;
++			uint8_t family_size, prefix_size, route_size;
++			if (rt->rtm_family == AF_INET) {
++				family_size = INET_ADDRSTRLEN;
++				prefix_size = 3;
++				route_size = family_size+1+prefix_size;
++			} else {
++				family_size = INET6_ADDRSTRLEN;
++				prefix_size = 4;
++				route_size = family_size+1+prefix_size;
++			}
+ 
+-	if (vrrp) {
+-		if (vrrp->state != VRRP_STATE_MAST)
++			char dest_addr[family_size+1];
++			char prefix_string[prefix_size+1];
++			char route_string[route_size+1];
++			memset(dest_addr, 0, family_size+1);
++			memset(route_string, 0, route_size+1);
++			memset(prefix_string, 0, prefix_size+1);
++
++			snprintf(prefix_string, prefix_size, "%d", rt->rtm_dst_len);
++			inet_ntop(rt->rtm_family, RTA_DATA(tb[RTA_DST]), dest_addr, family_size);
++			strncat(route_string, dest_addr, family_size);
++			strcat(route_string, "/");
++			strncat(route_string, prefix_string, prefix_size);
++
++			g_hash_table_lookup_extended(vrrp_data->vrrp_tracked_routes,
++										 route_string, NULL, (void *)&route_to);
++
++			if (route_to) {
++				if (h->nlmsg_type == RTM_NEWROUTE)
++					route_to->is_up = true;
++				else
++					route_to->is_up = false;
++			}
++			update_route_tracking_vrrp(route_to);
+ 			return 0;
+-
+-		set_vrrp_backup(vrrp);
++		}
+ 	}
+-	else
+-		reinstate_static_route(route);
+-
+ 	return 0;
+ }
+ 
+@@ -2334,6 +2393,77 @@ netlink_rule_filter(__attribute__((unuse
+ 
+ 	return 0;
+ }
++
++static int
++netlink_rtm_request(gpointer key, gpointer value, gpointer user_data)
++{
++	log_message(LOG_DEBUG, "Calling %s", __func__);
++	ssize_t status;
++	struct sockaddr_nl snl;
++	struct {
++		struct nlmsghdr nlh;
++		struct rtmsg r;
++		char    buf[256];
++	} req;
++	nl_handle_t nl;
++	route_to_t * route_value = (route_to_t *)value;
++
++	// Required for reloads, otherwise we can pick up RTM_NEWADDR messages instead of routes
++	netlink_socket(&nl,  global_data->vrrp_netlink_cmd_rcv_bufs, global_data->vrrp_netlink_cmd_rcv_bufs_force, 0, 0);
++
++	/* Cleanup the room */
++	memset(&snl, 0, sizeof (snl));
++	memset(&req, 0, sizeof (req));
++	snl.nl_family = AF_NETLINK;
++	req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
++	req.nlh.nlmsg_type = RTM_GETROUTE;
++	req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
++	req.nlh.nlmsg_seq = ++nl.seq;
++	req.nlh.nlmsg_pid = 0;
++	req.r.rtm_family = route_value->network.ss_family;
++	req.r.rtm_dst_len = route_value->prefix;
++	req.r.rtm_flags = RTM_F_FIB_MATCH;
++
++	if (route_value->network.ss_family == AF_INET) {
++		struct sockaddr_in * tmp_sock;
++		tmp_sock = (struct sockaddr_in *)&(route_value->network);
++		addattr_l(&req.nlh, sizeof(req), RTA_DST,
++					&(tmp_sock->sin_addr),
++					sizeof(tmp_sock->sin_addr));
++	} else {
++		struct sockaddr_in6 * tmp_sock;
++		tmp_sock = (struct sockaddr_in6 *)&(route_value->network);
++		addattr_l(&req.nlh, sizeof(req), RTA_DST,
++					&(tmp_sock->sin6_addr),
++					sizeof(tmp_sock->sin6_addr));
++	}
++
++	status = sendto(nl.fd, (void *) &req, sizeof (req)
++					, 0, PTR_CAST(struct sockaddr, &snl), sizeof (snl));
++	if (status < 0) {
++		log_message(LOG_INFO, "Netlink: sendto() failed: %s",
++					strerror(errno));
++		return status;
++	}
++
++	status =  netlink_parse_info(netlink_route_filter, &nl, NULL, false);
++
++	if (status == 0)
++		status = 1;
++
++	netlink_close(&nl);
++	return status;
++}
++
++/* Route lookup bootstrap function */
++int
++netlink_route_lookup(void)
++{
++	g_hash_table_foreach(vrrp_data->vrrp_tracked_routes, (GHFunc)netlink_rtm_request, NULL);
++	return 0;
++}
++
++
+ #endif
+ #endif
+ 
+@@ -2364,9 +2494,11 @@ netlink_broadcast_filter(struct sockaddr
+ 	case RTM_NEWROUTE:
+ 	case RTM_DELROUTE:
+ 		return netlink_route_filter(snl, h);
++		break;
+ 	case RTM_NEWRULE:
+ 	case RTM_DELRULE:
+ 		return netlink_rule_filter(snl, h);
++		break;
+ #endif
+ 	default:
+ 		log_message(LOG_INFO,
+@@ -2464,7 +2596,11 @@ kernel_netlink_init(void)
+ #ifdef _ONE_PROCESS_DEBUG_
+ #ifdef _WITH_VRRP_
+ 	netlink_socket(&nl_kernel, global_data->vrrp_netlink_monitor_rcv_bufs, global_data->vrrp_netlink_monitor_rcv_bufs_force,
+-			SOCK_NONBLOCK, RTNLGRP_LINK, RTNLGRP_IPV4_IFADDR, RTNLGRP_IPV6_IFADDR, 0);
++			SOCK_NONBLOCK,
++#ifdef _HAVE_FIB_ROUTING_
++			 RTNLGRP_IPV4_ROUTE, RTNLGRP_IPV6_ROUTE,
++#endif
++			 RTNLGRP_LINK, RTNLGRP_IPV4_IFADDR, RTNLGRP_IPV6_IFADDR, 0);
+ #else
+ 	netlink_socket(&nl_kernel, global_data->lvs_netlink_monitor_rcv_bufs, global_data->lvs_netlink_monitor_rcv_bufs_force,
+ 			SOCK_NONBLOCK, RTNLGRP_IPV4_IFADDR, RTNLGRP_IPV6_IFADDR, 0);
+@@ -2473,7 +2609,11 @@ kernel_netlink_init(void)
+ #ifdef _WITH_VRRP_
+ 	if (prog_type == PROG_TYPE_VRRP)
+ 		netlink_socket(&nl_kernel, global_data->vrrp_netlink_monitor_rcv_bufs, global_data->vrrp_netlink_monitor_rcv_bufs_force,
+-				SOCK_NONBLOCK, RTNLGRP_LINK, RTNLGRP_IPV4_IFADDR, RTNLGRP_IPV6_IFADDR, 0);
++				SOCK_NONBLOCK,
++#ifdef _HAVE_FIB_ROUTING_
++				RTNLGRP_IPV4_ROUTE, RTNLGRP_IPV6_ROUTE,
++#endif
++				RTNLGRP_LINK, RTNLGRP_IPV4_IFADDR, RTNLGRP_IPV6_IFADDR, 0);
+ #endif
+ #ifdef _WITH_LVS_
+ 	if (prog_type == PROG_TYPE_CHECKER)
+--- a/keepalived/include/keepalived_netlink.h
++++ b/keepalived/include/keepalived_netlink.h
+@@ -55,6 +55,15 @@ typedef struct _nl_handle {
+ #define SOL_NETLINK 270
+ #endif
+ 
++#ifdef _HAVE_FIB_ROUTING_
++/* Build system complains that the macro doesn't exist
++ * but the code still works with the 0x2000 added to the flag.
++ * Adding this define in case it doesn't exist
++ */
++#ifndef RTM_F_FIB_MATCH
++#define RTM_F_FIB_MATCH 0x2000
++#endif
++#endif
+ #define RTA_TAIL(rta)	PTR_CAST(struct rtattr, (char *)(rta) + RTA_ALIGN((rta)->rta_len))
+ 
+ /* Global vars exported */
+@@ -133,6 +142,9 @@ extern size_t rta_nest_end(struct rtattr
+ extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
+ extern int netlink_interface_lookup(char *);
+ extern int netlink_address_lookup(void);
++#ifdef _HAVE_FIB_ROUTING_
++extern int netlink_route_lookup(void);
++#endif
+ extern void kernel_netlink_poll(void);
+ extern void process_if_status_change(interface_t *);
+ #endif
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -602,6 +602,11 @@ start_vrrp(data_t *prev_global_data)
+ 		}
+ 	}
+ 
++#ifdef _HAVE_FIB_ROUTING_
++	if (g_hash_table_size(vrrp_data->vrrp_tracked_routes) > 0)
++		netlink_route_lookup();
++#endif
++
+ 	if (!__test_bit(CONFIG_TEST_BIT, &debug)) {
+ 		/* Init & start the VRRP packet dispatcher */
+ 		if (!reload && global_data->vrrp_startup_delay) {
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2959,6 +2959,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
+ 	tracked_bfd_t *tbfd, *tbfd_tmp;
+ #endif
+ #ifdef _HAVE_FIB_ROUTING_
++	tracked_route_t *tr, *tr_tmp;
+ 	ip_route_t *route;
+ 	ip_rule_t *rule;
+ #endif
+@@ -4601,7 +4602,7 @@ vrrp_complete_init(void)
+ 	process_static_entries();
+ 
+ 	/* If we are tracking any routes/rules, ask netlink to monitor them */
+-	set_extra_netlink_monitoring(monitor_ipv4_routes, monitor_ipv6_routes, monitor_ipv4_rules, monitor_ipv6_rules);
++	set_extra_netlink_monitoring(true, true, monitor_ipv4_rules, monitor_ipv6_rules);
+ #endif
+ 
+ #ifdef _WITH_LINKBEAT_
+--- a/keepalived/vrrp/vrrp_sync.c
++++ b/keepalived/vrrp/vrrp_sync.c
+@@ -53,6 +53,10 @@ vrrp_sync_set_group(vrrp_sgroup_t *sgrou
+ 	char *str;
+ 	unsigned int i;
+ 	bool group_member_down = false;
++	tracked_if_t *tip, *tip_tmp;
++#ifdef _HAVE_FIB_ROUTING_
++	tracked_route_t *tr, *tr_tmp;
++#endif
+ 
+ 	/* Can't handle no members of the group */
+ 	if (!sgroup->iname)
+@@ -74,6 +78,26 @@ vrrp_sync_set_group(vrrp_sgroup_t *sgrou
+ 		list_add_tail(&vrrp->s_list, &sgroup->vrrp_instances);
+ 		vrrp->sync = sgroup;
+ 
++		list_for_each_entry_safe(tip, tip_tmp, &vrrp->track_ifp, e_list) {
++			if (tip->weight && tip->weight != VRRP_NOT_TRACK_IF) {
++				report_config_error(CONFIG_GENERAL_ERROR, "(%s) ignoring"
++									  " tracked interface %s weighting"
++									, vrrp->iname
++									, tip->ifp->ifname);
++				tip->weight = 0;
++			}
++		}
++#ifdef _HAVE_FIB_ROUTING_
++		list_for_each_entry_safe(tr, tr_tmp, &vrrp->track_route, e_list) {
++			if (tr->weight) {
++				report_config_error(CONFIG_GENERAL_ERROR, "(%s) ignoring"
++									  " tracked route weighting"
++									, vrrp->iname);
++				tr->weight = 0;
++			}
++		}
++#endif
++
+ 		/* set eventual sync group state. Unless all members are master and address owner,
+ 		 * then we must be backup */
+ 		if (sgroup->state == VRRP_STATE_MAST && vrrp->wantstate == VRRP_STATE_BACK)
