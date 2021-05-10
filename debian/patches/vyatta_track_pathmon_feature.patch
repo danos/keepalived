@@ -1,0 +1,890 @@
+Add path-monitor instances as trackable objects
+
+This is a vyatta specific patch as the path-monitor feature is closed source.
+
+This patch provides functionality to track the state of a path-monitor and have
+it affect the state or priority of a VRRP group. This is useful for when one
+path to a destination is quicker than another. The details of path-monitors are
+documented elsewhere, this change set is only concerned with the compliance
+state of the configured path-monitor.
+
+Path-monitors periodically advertise their compliance via DBus signals,
+listening for these signals allows us to modify the VRRP group state.
+A Path-monitor can be DELETED, COMPLIANT, or NON_COMPLIANT, due to the YANG
+definitions for VRRP we can't track a Path-monitor that isn't configured and
+a Path-monitor can not be deleted while it is being tracked. This simplifies
+what we must listen for as any Path-monitor with a DELETED state can be ignored.
+
+This change set follows the same design pattern as upstream tracked objects.
+The tracked object is it's own structure with it's tracked state and a list of
+VRRP groups that track this object.
+Each VRRP group then has a list of structures that points to the tracked object
+structure and contains the weighting to modify the VRRP Priority by if the
+tracked object is UP or DOWN.
+This seems a bit complex but makes it easier in practice to modify VRRP
+priorities.
+
+A Path-monitor is uniquely defined by a combination of a Monitor name and a
+Policy name, the state can be queried directly using this combination. On
+signal receipt the Monitor and Policy name can be compared to the values of
+stored tracked object structures and then the compliance value in the signal
+stored as well.
+
+The state of the Path-monitor is fetched synchronously when the VRRP group is
+first configured, then in the DBus code we set a callback for the Path-monitor
+signal. As the state of the Path-monitor is sent periodically we only need to
+take notice when the state changes, if we don't we end up repeatedly adding the
+weighting to the VRRP priority.
+
+The callback needs to run in the VRRP thread otherwise when we access the VRRP
+data structures the code segfaults.
+
+---
+ keepalived/include/vrrp.h       |    6 +
+ keepalived/include/vrrp_data.h  |    6 +
+ keepalived/include/vrrp_track.h |   51 ++++++++
+ keepalived/vrrp/vrrp.c          |   52 +++++++++
+ keepalived/vrrp/vrrp_daemon.c   |    3 
+ keepalived/vrrp/vrrp_data.c     |   91 +++++++++++++++
+ keepalived/vrrp/vrrp_dbus.c     |  122 ++++++++++++++++++++-
+ keepalived/vrrp/vrrp_parser.c   |   10 +
+ keepalived/vrrp/vrrp_track.c    |  231 ++++++++++++++++++++++++++++++++++++++++
+ 9 files changed, 570 insertions(+), 2 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -244,6 +244,9 @@ typedef struct _vrrp_t {
+ #ifdef _HAVE_FIB_ROUTING_
+ 	list_head_t		track_route;	/* tracked_route_t - Route whose value we monitor */
+ #endif
++#ifdef _WITH_DBUS_
++	list_head_t		track_pathmon;	/* tracked_pathmon_t - Path monitor whose value we monitor */
++#endif
+ 	unsigned		num_script_if_fault;	/* Number of scripts and interfaces in fault state */
+ 	unsigned		num_script_init;	/* Number of scripts in init state */
+ 	bool			notifies_sent;		/* Set when initial notifies have been sent */
+@@ -471,6 +474,9 @@ extern void set_previous_sync_group_stat
+ #ifdef _WITH_BFD_
+ extern void clear_diff_bfd(void);
+ #endif
++#ifdef _WITH_DBUS_
++extern void clear_diff_pathmon(void);
++#endif
+ extern void vrrp_restore_interface(vrrp_t *, bool, bool);
+ #ifdef THREAD_DUMP
+ extern void register_vrrp_fifo_addresses(void);
+--- a/keepalived/include/vrrp_data.h
++++ b/keepalived/include/vrrp_data.h
+@@ -61,6 +61,9 @@ typedef struct _vrrp_data {
+ #ifdef _HAVE_FIB_ROUTING_
+ 	GHashTable 		*vrrp_tracked_routes;
+ #endif
++#ifdef _WITH_DBUS_
++	list_head_t		vrrp_tracked_pathmons;
++#endif
+ } vrrp_data_t;
+ 
+ /* Global Vars exported */
+@@ -103,6 +106,9 @@ extern void alloc_vrrp_group_track_bfd(c
+ #ifdef _HAVE_FIB_ROUTING_
+ extern void alloc_vrrp_track_route(const vector_t *);
+ #endif
++#ifdef _WITH_DBUS_
++extern void alloc_vrrp_track_pathmon(const vector_t *);
++#endif
+ extern void alloc_vrrp_vip(const vector_t *);
+ extern void alloc_vrrp_evip(const vector_t *);
+ extern void alloc_vrrp_vroute(const vector_t *);
+--- a/keepalived/include/vrrp_track.h
++++ b/keepalived/include/vrrp_track.h
+@@ -27,6 +27,9 @@
+ #include <stdbool.h>
+ #include <stdio.h>
+ #include <sys/types.h>
++#ifdef _WITH_DBUS_
++#include <gio/gio.h>
++#endif
+ 
+ /* local includes */
+ #include "vector.h"
+@@ -193,6 +196,41 @@ typedef struct _tracked_route {
+ } tracked_route_t;
+ #endif
+ 
++#ifdef _WITH_DBUS_
++/* Tracked path monitor structure definition */
++
++typedef struct _vrrp_pathmon_t {
++	char 			*monitor;		/* Monitor name */
++	char 			*policy;		/* Policy name */
++	bool 			is_up;			/* PathMonitor is compliant or non-compliant */
++	list_head_t		tracking_vrrp;	/* tracking_obj_t - for vrrp instances tracking this pathmon */
++
++	/* linked list member */
++	list_head_t		e_list;
++} vrrp_pathmon_t;
++
++typedef struct _tracked_pathmon {
++	int weight;					/* Tracking weight when non-zero */
++	int weight_reverse;			/* Which direction is the weight applied */
++	vrrp_pathmon_t *pathmon; 	/* Tracked path monitor, cannot be NULL */
++
++	/* Linked list member */
++	list_head_t e_list;
++} tracked_pathmon_t;
++
++/* DBus string for the path monitor objects */
++#define PATHMON_DBUS_OBJECT_STRING "/net/vyatta/monitord/v1/state"
++#define PATHMON_DBUS_INTERFACE_STRING "net.vyatta.monitord.v1"
++
++/* Pathmon state defines */
++#define PATHMON_NONCOMPLIANT 0
++#define PATHMON_COMPLIANT 1
++#define PATHMON_DELETED 2
++
++/* Pathmon monitor and policy max size */
++#define PATHMON_NAME_MAX_SIZE 30
++#endif
++
+ /* Forward references */
+ struct _vrrp_t;
+ struct _vrrp_sgroup;
+@@ -226,6 +264,19 @@ extern void free_track_route_list(list_h
+ extern void alloc_track_route(const char *, list_head_t *, const vector_t *);
+ extern void update_route_priorities(struct _vrrp_t *, route_to_t *);
+ #endif
++#ifdef _WITH_DBUS_
++extern void dump_track_pathmon_list(FILE *, const list_head_t *);
++extern void free_track_pathmon(tracked_pathmon_t *);
++extern void free_track_pathmon_list(list_head_t *);
++extern void alloc_track_pathmon(const char *, list_head_t *, const vector_t *);
++extern void update_pathmon_state_from_signal(GDBusConnection *,
++											const gchar *,
++											const gchar *,
++											const gchar *,
++											const gchar *,
++											GVariant *,
++											void *);
++#endif
+ extern vrrp_script_t *find_script_by_name(const char *) __attribute__ ((pure));
+ extern void update_script_priorities(vrrp_script_t *, bool);
+ extern void down_instance(struct _vrrp_t *);
+--- a/keepalived/vrrp/vrrp_parser.c
++++ b/keepalived/vrrp/vrrp_parser.c
+@@ -783,6 +783,13 @@ vrrp_track_route_handler(const vector_t
+ 	alloc_value_block(alloc_vrrp_track_route, strvec);
+ }
+ #endif
++#ifdef _WITH_DBUS_
++static void
++vrrp_track_pathmon_handler(const vector_t *strvec)
++{
++	alloc_value_block(alloc_vrrp_track_pathmon, strvec);
++}
++#endif
+ static void
+ vrrp_srcip_handler(const vector_t *strvec)
+ {
+@@ -1933,6 +1940,9 @@ init_vrrp_keywords(bool active)
+ #ifdef _HAVE_FIB_ROUTING_
+ 	install_keyword("track_route_to", &vrrp_track_route_handler);
+ #endif
++#ifdef _WITH_DBUS_
++	install_keyword("track_pathmon", &vrrp_track_pathmon_handler);
++#endif
+ 	install_keyword("mcast_src_ip", &vrrp_srcip_handler);
+ 	install_keyword("unicast_src_ip", &vrrp_srcip_handler);
+ 	install_keyword("track_src_ip", &vrrp_track_srcip_handler);
+--- a/keepalived/vrrp/vrrp_track.c
++++ b/keepalived/vrrp/vrrp_track.c
+@@ -687,6 +687,154 @@ alloc_track_route(const char *name, list
+ 	list_add_tail(&troute->e_list, l);
+ }
+ #endif
++#ifdef _WITH_DBUS_
++/* Track route dump */
++static void
++dump_track_pathmon(FILE *fp, const tracked_pathmon_t *tpm)
++{
++	conf_write(fp, "    name %s/%s state %s weight %d",
++				tpm->pathmon->monitor, tpm->pathmon->policy,
++				(tpm->pathmon->is_up? "UP" : "DOWN"), tpm->weight);
++	return;
++}
++void
++dump_track_pathmon_list(FILE *fp, const list_head_t *l)
++{
++	tracked_pathmon_t *tpm;
++
++	list_for_each_entry(tpm, l, e_list)
++		dump_track_pathmon(fp, tpm);
++}
++
++void
++free_track_pathmon(tracked_pathmon_t *tpm)
++{
++	list_del_init(&tpm->e_list);
++	FREE(tpm);
++}
++void
++free_track_pathmon_list(list_head_t *l)
++{
++	tracked_pathmon_t *tpm, *tpm_tmp;
++
++	list_for_each_entry_safe(tpm, tpm_tmp, l, e_list)
++		free_track_pathmon(tpm);
++}
++
++static bool dbus_is_pathmonitor_up(char *, char *);
++/*
++ * Function to define structures for specific tracked pathmonitors.
++ * The contents of a structure is obtained from parsing the string vector read
++ * from the keepalived.conf file. The config line's structure is;
++ * name <monitor>/<policy> state (UP|DOWN) weight -254..254
++ * If weight is zero it's ignored.
++ */
++void
++alloc_track_pathmon(const char *name, list_head_t *l, const vector_t *strvec)
++{
++	tracked_pathmon_t * tpm = NULL;
++	vrrp_pathmon_t * vpm = NULL;
++	bool reverse = false;
++	int weight = 0;
++	char *vector = vector_slot(strvec, 0);
++	char pathmonitor[(PATHMON_NAME_MAX_SIZE*2)+2];  // monitor/policy\0
++	char *pathmon_dup;
++	char *monitor;
++	char *policy;
++	char *sep_str = NULL;
++
++	memset(pathmonitor, 0, sizeof(pathmonitor));
++	monitor = MALLOC(sizeof(char)*PATHMON_NAME_MAX_SIZE+1);
++	memset(monitor, 0, sizeof(monitor));
++	policy = MALLOC(sizeof(char)*PATHMON_NAME_MAX_SIZE+1);
++	memset(policy, 0, sizeof(policy));
++	strncpy(pathmonitor, vector, strlen(vector));
++
++	if (vector_size(strvec) >= 2) {
++		if (strcmp(strvec_slot(strvec, 1), "weight")) {
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) unknown track_pathmon %s"
++								  " option %s - ignoring"
++								, name, pathmonitor, strvec_slot(strvec, 1));
++			return;
++		}
++
++		if (vector_size(strvec) == 2) {
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) weight without value specified"
++								  " for track_pathmonitor %s - ignoring"
++								, name, pathmonitor);
++			return;
++		}
++
++		if (!read_int_strvec(strvec, 2, &weight, -254, 254, true)) {
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) weight %s for %s must be"
++								  " between [-253..253] inclusive. Ignoring..."
++								, name, strvec_slot(strvec, 2), pathmonitor);
++			weight = 0;
++		}
++		else if (weight == -254 || weight == 254) {
++			/* This check can be removed once users have migrated away from +/-254 */
++			report_config_error(CONFIG_GENERAL_ERROR, "(%s) weight for %s cannot be +/-254."
++								  " Setting to +/-253"
++								, name, pathmonitor);
++			weight = weight == -254 ? -253 : 253;
++		}
++
++		if (vector_size(strvec) >= 4) {
++			if (!strcmp(strvec_slot(strvec, 3), "reverse"))
++				reverse = true;
++			else
++				report_config_error(CONFIG_GENERAL_ERROR, "(%s) unknown track_pathmonitor %s"
++									  " weight option %s - ignoring"
++									, name, pathmonitor, strvec_slot(strvec, 3));
++		}
++	}
++
++	pathmon_dup = strndup(pathmonitor, sizeof(pathmonitor));
++	if (!(sep_str = strchr(pathmon_dup, '/'))) {
++		report_config_error(CONFIG_GENERAL_ERROR, "(%s) unexpected track_pathmon format: %s"
++							  " expected <monitor>/<policy> ignoring config line"
++							, name, pathmonitor);
++		free(pathmon_dup);
++		return;
++	}
++
++	*sep_str = '\0';
++	sep_str++;
++	strcpy(monitor, pathmon_dup);
++	strcpy(policy, sep_str);
++	free(pathmon_dup);
++
++	if (!list_empty(&vrrp_data->vrrp_tracked_pathmons)) {
++		vrrp_pathmon_t *vpm_tmp;
++
++		list_for_each_entry(vpm_tmp, &vrrp_data->vrrp_tracked_pathmons, e_list) {
++			if ((strncmp(vpm_tmp->monitor, monitor, strlen(monitor)) == 0)
++				&& (strncmp(vpm_tmp->policy, policy, strlen(policy)) == 0)) {
++					vpm = vpm_tmp;
++					break;
++				}
++		}
++	}
++
++	if (vpm == NULL) {
++		PMALLOC(vpm);
++		INIT_LIST_HEAD(&vpm->e_list);
++		vpm->monitor = monitor;
++		vpm->policy = policy;
++		vpm->is_up = dbus_is_pathmonitor_up(monitor, policy);
++		INIT_LIST_HEAD(&vpm->tracking_vrrp);
++		list_add_tail(&vpm->e_list, &vrrp_data->vrrp_tracked_pathmons);
++	}
++
++	PMALLOC(tpm);
++	INIT_LIST_HEAD(&tpm->e_list);
++	tpm->pathmon    = vpm;
++	tpm->weight = weight;
++	tpm->weight_reverse = reverse;
++
++	list_add_tail(&tpm->e_list, l);
++}
++#endif
+ void
+ down_instance(vrrp_t *vrrp)
+ {
+@@ -884,6 +1032,27 @@ initialise_track_route_state(tracked_rou
+ }
+ #endif
+ 
++#ifdef _WITH_DBUS_
++static void
++initialise_track_pathmon_state(tracked_pathmon_t *tpm, vrrp_t *vrrp)
++{
++	int multiplier = tpm->weight_reverse ? -1 : 1;
++
++	if (tpm->weight != 0) {
++		if (tpm->pathmon->is_up) {
++			if (tpm->weight > 0)
++				vrrp->total_priority += tpm->weight * multiplier;
++		} else {
++			if (tpm->weight < 0)
++				vrrp->total_priority += tpm->weight * multiplier;
++		}
++	} else if (tpm->pathmon->is_up == tpm->weight_reverse) {
++		vrrp->num_script_if_fault++;
++		vrrp->state = VRRP_STATE_FAULT;
++	}
++}
++#endif
++
+ static void
+ initialise_interface_tracking_priorities(void)
+ {
+@@ -992,6 +1161,10 @@ initialise_vrrp_tracking_priorities(vrrp
+ 	tracked_route_t *tr;
+ #endif
+ 
++#ifdef _WITH_DBUS_
++	tracked_pathmon_t *tpm;
++#endif
++
+ 	/* If no src address has been specified, and the interface doesn't have
+ 	 * an appropriate address, put the interface into fault state */
+ 	if (vrrp->saddr.ss_family == AF_UNSPEC) {
+@@ -1018,6 +1191,12 @@ initialise_vrrp_tracking_priorities(vrrp
+ 		initialise_track_route_state(tr, vrrp);
+ #endif
+ 
++#ifdef _WITH_DBUS_
++	/* Initialise the VRRP instance's tracked pathmonitors */
++	list_for_each_entry(tpm, &vrrp->track_pathmon, e_list)
++		initialise_track_pathmon_state(tpm, vrrp);
++#endif
++
+ 	/* If have a sync group, initialise it's tracked scripts and bfds */
+ 	if (vrrp->sync) {
+ 		list_for_each_entry(tsc, &vrrp->sync->track_script, e_list)
+@@ -1120,3 +1299,55 @@ update_route_priorities(vrrp_t *vrrp, ro
+ 	}
+ }
+ #endif
++
++#ifdef _WITH_DBUS_
++/*
++ * Connect to the System DBus and find the state of the monitor and policy given
++ * in the arguments.
++ */
++static bool
++dbus_is_pathmonitor_up(char *monitor, char *policy)
++{
++	GDBusConnection * connection;
++	GError *error;
++	GVariant *result;
++	uint32_t policy_value = 0;
++
++	error = NULL;
++	connection = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
++	if (error != NULL) {
++			log_message(LOG_DEBUG, "Got a DBus connection error when attempting"
++									" to connect to the System Bus: %d, %s",
++									error->code,
++									error->message);
++		return -1; // 0 is a valid state
++	}
++	error = NULL;
++	result = g_dbus_connection_call_sync(connection,
++									PATHMON_DBUS_INTERFACE_STRING,
++									PATHMON_DBUS_OBJECT_STRING,
++									PATHMON_DBUS_INTERFACE_STRING,
++									"get_state",
++									g_variant_new("(ss)", monitor, policy),
++									G_VARIANT_TYPE_TUPLE,
++									G_DBUS_CALL_FLAGS_NONE,
++									-1,
++									NULL,
++									&error);
++	if (error != NULL) {
++			log_message(LOG_DEBUG, "Got a Dbus method error when attempting to get"
++									" the compliance state of object %s.get_state(%s, %s): %d, %s",
++									PATHMON_DBUS_OBJECT_STRING,
++									monitor,
++									policy,
++									error->code,
++									error->message);
++			g_object_unref(connection);
++			return -2;
++	}
++	g_variant_get(result, "(i)", &policy_value);
++	g_variant_unref(result);
++	g_object_unref(connection);
++	return (policy_value == PATHMON_COMPLIANT);
++}
++#endif
+--- a/keepalived/vrrp/vrrp_data.c
++++ b/keepalived/vrrp/vrrp_data.c
+@@ -429,6 +429,41 @@ dump_vrrp_tracked_bfd_list(FILE *fp, con
+ }
+ #endif
+ 
++#ifdef _WITH_DBUS_
++void
++free_vrrp_tracked_pathmon(vrrp_pathmon_t *vpm)
++{
++	list_del_init(&vpm->e_list);
++	FREE(vpm->monitor);
++	FREE(vpm->policy);
++	free_tracking_obj_list(&vpm->tracking_vrrp);
++	FREE(vpm);
++}
++static void
++free_vrrp_tracked_pathmon_list(list_head_t *l)
++{
++	vrrp_pathmon_t *vpm, *vpm_tmp;
++	list_for_each_entry_safe(vpm, vpm_tmp, l, e_list)
++		free_vrrp_tracked_pathmon(vpm);
++}
++
++static void
++dump_vrrp_tracked_pathmon(FILE *fp, const vrrp_pathmon_t *vpm)
++{
++	conf_write(fp, " VRRP Track Pathmon = %s/%s is %s", vpm->monitor, vpm->policy, (vpm->is_up ? "up" : "down"));
++	conf_write(fp, "   Tracking VRRP instances :");
++	dump_tracking_obj_list(fp, &vpm->tracking_vrrp, dump_tracking_vrrp);
++}
++static void
++dump_vrrp_tracked_pathmon_list(FILE *fp, const list_head_t *l)
++{
++	vrrp_pathmon_t *vpm;
++
++	list_for_each_entry(vpm, l, e_list)
++		dump_vrrp_tracked_pathmon(fp, vpm);
++}
++#endif
++
+ /* Socket pool functions */
+ static void
+ free_sock(sock_t *sock)
+@@ -563,6 +598,9 @@ free_vrrp(vrrp_t *vrrp)
+ 	// Free the list, the elements should be freed from the global hash map
+ 	free_track_route_list(&vrrp->track_route);
+ #endif
++#ifdef _WITH_DBUS_
++	free_track_pathmon_list(&vrrp->track_pathmon);
++#endif
+ 	free_unicast_peer_list(&vrrp->unicast_peer);
+ 	free_ipaddress_list(&vrrp->vip);
+ 	free_ipaddress_list(&vrrp->evip);
+@@ -810,6 +848,16 @@ dump_vrrp(FILE *fp, const vrrp_t *vrrp)
+ 		dump_track_route_list(fp, &vrrp->track_route);
+ 	}
+ #endif
++#ifdef _WITH_DBUS_
++	if (!list_empty(&vrrp->track_pathmon)) {
++		uint32_t length = 0;
++		list_head_t *e;
++		list_for_each(e, &vrrp->track_pathmon)
++			++length;
++		conf_write(fp, "   Tracked path-monitors = %d", length);
++		dump_track_pathmon_list(fp, &vrrp->track_pathmon);
++	}
++#endif
+ 
+ 	conf_write(fp, "   Using smtp notification = %s", vrrp->smtp_alert ? "yes" : "no");
+ 
+@@ -919,6 +967,9 @@ alloc_vrrp(const char *iname)
+ #ifdef _HAVE_FIB_ROUTING_
+ 	INIT_LIST_HEAD(&new->track_route);
+ #endif
++#ifdef _WITH_DBUS_
++	INIT_LIST_HEAD(&new->track_pathmon);
++#endif
+ 	INIT_LIST_HEAD(&new->vip);
+ 	INIT_LIST_HEAD(&new->evip);
+ #ifdef _HAVE_FIB_ROUTING_
+@@ -1072,6 +1123,16 @@ alloc_vrrp_track_route(const vector_t *s
+ }
+ #endif
+ 
++#ifdef _WITH_DBUS_
++void
++alloc_vrrp_track_pathmon(const vector_t *strvec)
++{
++	vrrp_t *vrrp = list_last_entry(&vrrp_data->vrrp, vrrp_t, e_list);
++
++	alloc_track_pathmon(vrrp->iname, &vrrp->track_pathmon, strvec);
++}
++#endif
++
+ void
+ alloc_vrrp_group_track_if(const vector_t *strvec)
+ {
+@@ -1261,6 +1322,9 @@ alloc_vrrp_data(void)
+ #ifdef _HAVE_FIB_ROUTING_
+ 	new->vrrp_tracked_routes = g_hash_table_new(g_str_hash, g_str_equal);
+ #endif
++#ifdef _WITH_DBUS_
++	INIT_LIST_HEAD(&new->vrrp_tracked_pathmons);
++#endif
+ 
+ 	return new;
+ }
+@@ -1300,6 +1364,24 @@ dump_tracked_routes(FILE *fp, GHashTable
+ }
+ #endif
+ 
++#ifdef _WITH_DBUS_
++static void
++dump_tracked_pathmon(FILE *fp, vrrp_pathmon_t *vpm)
++{
++	conf_write(fp, "    Pathmonitor %s/%s is %s", vpm->monitor, vpm->policy,
++					(vpm->is_up? "UP": "DOWN"));
++}
++
++static void
++dump_tracked_pathmons(FILE *fp, const list_head_t *l)
++{
++	vrrp_pathmon_t *vpm;
++
++	list_for_each_entry(vpm, l, e_list)
++		dump_tracked_pathmon(fp, vpm);
++}
++#endif
++
+ void
+ free_vrrp_data(vrrp_data_t * data)
+ {
+@@ -1324,6 +1406,9 @@ free_vrrp_data(vrrp_data_t * data)
+ #ifdef _WITH_BFD_
+ 	free_vrrp_tracked_bfd_list(&data->vrrp_track_bfds);
+ #endif
++#ifdef _WITH_DBUS_
++	free_vrrp_tracked_pathmon_list(&data->vrrp_tracked_pathmons);
++#endif
+ 	FREE(data);
+ }
+ 
+@@ -1386,6 +1471,12 @@ dump_vrrp_data(FILE *fp, const vrrp_data
+ 		dump_tracked_routes(fp, data->vrrp_tracked_routes);
+ 	}
+ #endif
++#ifdef _WITH_DBUS_
++	if (!list_empty(&data->vrrp_tracked_pathmons)) {
++		conf_write(fp, "------< VRRP Tracked Pathmonitors >------");
++		dump_tracked_pathmons(fp, &data->vrrp_tracked_pathmons);
++	}
++#endif
+ }
+ 
+ void
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -2875,6 +2875,28 @@ add_vrrp_to_track_bfd(vrrp_t *vrrp, trac
+ }
+ #endif
+ 
++#ifdef _WITH_DBUS_
++static void
++add_vrrp_to_track_pathmon(vrrp_t *vrrp, tracked_pathmon_t *tpm)
++{
++	vrrp_pathmon_t *vpm = tpm->pathmon;
++	tracking_obj_t *top;
++
++	/* Check if this VRRP group is already tracked by the pathmon, it shouldn't be */
++	list_for_each_entry(top, &vpm->tracking_vrrp, e_list) {
++		if (top != NULL && top->obj.vrrp != NULL && strncmp(top->obj.vrrp->iname, vrrp->iname, strlen(vrrp->iname)) == 0) {
++			return;
++		}
++	}
++
++	PMALLOC(top);
++	top->obj.vrrp = vrrp;
++	top->weight = tpm->weight;
++	top->weight_multiplier = tpm->weight_reverse ? -1 : 1;
++	list_add_tail(&top->e_list, &vpm->tracking_vrrp);
++}
++#endif
++
+ #ifdef _HAVE_VRRP_VMAC_
+ static interface_t *
+ create_vmac_name(const char *prefix, uint8_t vrid, int family)
+@@ -2963,6 +2985,9 @@ vrrp_complete_instance(vrrp_t * vrrp)
+ 	ip_route_t *route;
+ 	ip_rule_t *rule;
+ #endif
++#ifdef _WITH_DBUS_
++	tracked_pathmon_t *tpm, *tpm_tmp;
++#endif
+ 
+ 	if (vrrp->strict_mode == PARAMETER_UNSET)
+ 		vrrp->strict_mode = global_data->vrrp_strict;
+@@ -3922,6 +3947,12 @@ vrrp_complete_instance(vrrp_t * vrrp)
+ 		add_vrrp_to_track_bfd(vrrp, tbfd);
+ #endif
+ 
++#ifdef _WITH_DBUS_
++	/* Add our track pathmon to the tracking pathmon's tracking_vrrp list */
++	list_for_each_entry(tpm, &vrrp->track_pathmon, e_list)
++		add_vrrp_to_track_pathmon(vrrp, tpm);
++#endif
++
+ 	if (!vrrp->ifp || vrrp->ifp->ifindex) {
+ 		if (!reload && interface_already_existed) {
+ 			vrrp->vipset = true;	/* Set to force address removal */
+@@ -5041,6 +5072,27 @@ clear_diff_bfd(void)
+ 	}
+ }
+ #endif
++
++#ifdef _WITH_DBUS_
++/* Set the pathmon status to match old instance */
++void
++clear_diff_pathmon(void)
++{
++	vrrp_pathmon_t *vpm, *nvpm;
++
++	list_for_each_entry(vpm, &old_vrrp_data->vrrp_tracked_pathmons, e_list) {
++		list_for_each_entry(nvpm, &vrrp_data->vrrp_tracked_pathmons, e_list) {
++			if ((strlen(vpm->monitor) != strlen(nvpm->monitor)) || (strlen(vpm->policy) != strlen(nvpm->policy))) {
++				continue;
++			}
++			if ((strncmp(vpm->monitor, nvpm->monitor, strlen(nvpm->monitor)) == 0)
++				&& (strncmp(vpm->policy, nvpm->policy, strlen(nvpm->policy)) == 0)) {
++				nvpm->is_up = vpm->is_up;
++			}
++		}
++	}
++}
++#endif
+ 
+ #ifdef THREAD_DUMP
+ void
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -68,6 +68,7 @@
+ #include "vrrp_notify.h"
+ #include "vrrp_print.h"
+ #include "vrrp_sync.h"
++#include "vrrp_track.h"
+ #include "global_data.h"
+ #include "main.h"
+ #include "logger.h"
+@@ -94,7 +95,8 @@ typedef enum dbus_action {
+ 	DBUS_GET_XMIT,
+ 	DBUS_GET_IPAO,
+ 	DBUS_GET_LAST_TRANSITION,
+-	DBUS_GET_SYNC_GROUP
++	DBUS_GET_SYNC_GROUP,
++	DBUS_PATHMON_SIGNAL,
+ } dbus_action_t;
+ 
+ typedef enum dbus_error {
+@@ -695,12 +697,49 @@ read_file(const gchar* filepath)
+ 	}
+ 	return ret;
+ }
++static void
++handle_pathmon_signal(GDBusConnection *conn,
++					  const gchar *sender,
++					  const gchar *path,
++					  const gchar *interface,
++					  const gchar *signal,
++					  GVariant *params,
++					  void *userdata)
++{
++	(void)conn;
++	(void)sender;
++	(void)path;
++	(void)interface;
++	(void)userdata;
++
++	const char *monitor;
++	const char *policy;
++	int32_t policy_value;
++	dbus_queue_ent_t ent;
++	int action;
++
++
++	g_variant_get(params, "(ssi)", &monitor, &policy, &policy_value);
++
++	// Ignore any deleted path-monitors, VRRP can't be configured if the
++	// tracked object doesn't exist/has been deleted.
++	if (policy_value == PATHMON_DELETED)
++		return;
++	ent.action = DBUS_PATHMON_SIGNAL;
++	ent.args = params;
++	process_method_call(&ent);
++	if (ent.reply != DBUS_SUCCESS)
++		log_message(LOG_ERR, "Signal method call failed, better luck next time");
++}
+ 
+ static void *
+ dbus_main(__attribute__ ((unused)) void *unused)
+ {
++	GDBusConnection * connection;
+ 	const gchar *introspection_xml;
+ 	guint owner_id;
++	guint pathmon_sub;
++	bool sub_ok = true;
+ 	const char *service_name;
+ 
+ 	objects = g_hash_table_new(g_str_hash, g_str_equal);
+@@ -751,12 +790,39 @@ dbus_main(__attribute__ ((unused)) void
+ 				  NULL,  /* user_data */
+ 				  NULL); /* user_data_free_func */
+ 
++	error = NULL;
++	connection = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
++	if (error != NULL) {
++			log_message(LOG_DEBUG, "Got a DBus connection error when attempting"
++									" to connect to the System Bus: %d, %s",
++									error->code,
++									error->message);
++			sub_ok = false;
++	}
++	error = NULL;
++
+ 	loop = g_main_loop_new(NULL, FALSE);
++
++	if (sub_ok)
++		pathmon_sub = g_dbus_connection_signal_subscribe(connection,
++						"net.vyatta.monitord.v1",
++						"net.vyatta.monitord.v1",
++						"state_change",
++						PATHMON_DBUS_OBJECT_STRING,
++						NULL,
++						G_DBUS_SIGNAL_FLAGS_NONE,
++						handle_pathmon_signal,
++						NULL,
++						NULL);
+ 	g_main_loop_run(loop);
+ 
+ 	/* cleanup after loop terminates */
+ 	g_main_loop_unref(loop);
+ 	g_bus_unown_name(owner_id);
++	if (sub_ok) {
++		g_dbus_connection_signal_unsubscribe(connection, pathmon_sub);
++		g_object_unref(connection);
++	}
+ 	global_connection = NULL;
+ 
+ 	sem_post(&thread_end);
+@@ -915,6 +981,57 @@ handle_dbus_msg(__attribute__((unused))
+ 				}
+ 			}
+ 		}
++		else if (ent->action == DBUS_PATHMON_SIGNAL) {
++			// Need to call this in the VRRP main thread otherwise trying to
++			// access vrrp_data->tracked_pathmons crashes the process
++			ent->reply = DBUS_SUCCESS;
++			const char *monitor;
++			const char *policy;
++			int32_t policy_value;
++			tracking_obj_t *top;
++
++			g_variant_get(ent->args, "(ssi)", &monitor, &policy, &policy_value);
++			if (!list_empty(&vrrp_data->vrrp_tracked_pathmons)) {
++				tracked_pathmon_t *tpm;
++				vrrp_pathmon_t *vpm;
++
++				list_for_each_entry(vpm, &vrrp_data->vrrp_tracked_pathmons, e_list) {
++					if ((g_strcmp0(vpm->monitor, monitor) == 0)
++							&& (g_strcmp0(vpm->policy, policy) == 0)) {
++						// DBus signal is sent periodically. Only modify is_up if
++						// there is a change in state.
++						if (vpm->is_up != ((policy_value == PATHMON_COMPLIANT)))
++							vpm->is_up = (policy_value == PATHMON_COMPLIANT);
++						else
++							continue;
++						if (!list_empty(&vpm->tracking_vrrp)) {
++							list_for_each_entry(top, &vpm->tracking_vrrp, e_list) {
++								vrrp = top->obj.vrrp;
++								if (!list_empty(&vrrp->track_pathmon)) {
++									list_for_each_entry(tpm, &vrrp->track_pathmon, e_list) {
++										if (tpm->pathmon == vpm) {
++											if (!tpm->weight) {
++												if (tpm->pathmon->is_up)
++													try_up_instance(vrrp, false);
++												else
++													down_instance(vrrp);
++											} else if (vrrp->base_priority != VRRP_PRIO_OWNER ) {
++												if ((tpm->weight > 0) == tpm->pathmon->is_up) {
++													vrrp->total_priority += tpm->weight;
++												} else{
++													vrrp->total_priority -= tpm->weight;
++												}
++												vrrp_set_effective_priority(vrrp);
++											}
++										}
++									}
++								}
++							}
++						}
++					}
++				}
++			}
++		}
+ 
+ 		else if (ent->action == DBUS_GET_NAME ||
+ 			 ent->action == DBUS_GET_STATUS ||
+@@ -953,7 +1070,8 @@ handle_dbus_msg(__attribute__((unused))
+ 			log_message(LOG_INFO, "Write from main thread to DBus thread failed");
+ 	}
+ 
+-	thread_add_read(master, handle_dbus_msg, NULL, dbus_in_pipe[0], TIMER_NEVER, false);
++	if (dbus_in_pipe[0] != -1)
++		thread_add_read(master, handle_dbus_msg, NULL, dbus_in_pipe[0], TIMER_NEVER, false);
+ }
+ 
+ void
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -589,6 +589,9 @@ start_vrrp(data_t *prev_global_data)
+ #ifdef _WITH_BFD_
+ 			clear_diff_bfd();
+ #endif
++#ifdef _WITH_DBUS_
++			clear_diff_pathmon();
++#endif
+ 		}
+ 		else {
+ 			/* Clear leftover static entries */
