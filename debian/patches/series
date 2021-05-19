@@ -50,3 +50,4 @@ vyatta_dynamic_ipao_detection.patch
 vyatta_dbus_reload_function.patch
 vyatta_track_route_feature.patch
 vyatta_track_pathmon_feature.patch
+vyatta_check_lower_is_up.patch

@@ -60,17 +60,18 @@ interface behaviour for the keepalived v2.2.0 release:
 
 ---
  keepalived/core/keepalived_netlink.c |    9 -
- keepalived/include/vrrp_if.h         |    2 
+ keepalived/include/vrrp_if.h         |    3 
  keepalived/include/vrrp_ipaddress.h  |    1 
  keepalived/include/vrrp_vmac.h       |    2 
  keepalived/vrrp/vrrp.c               |  307 ++++++++++++++++++++++++++---------
+ keepalived/vrrp/vrrp_if.c            |   11 +
  keepalived/vrrp/vrrp_ipaddress.c     |   85 +++++++++
  keepalived/vrrp/vrrp_scheduler.c     |  160 +++++++++++++++---
  keepalived/vrrp/vrrp_track.c         |    4 
  keepalived/vrrp/vrrp_vmac.c          |   31 +++
  lib/utils.c                          |    2 
  lib/utils.h                          |    1 
- 11 files changed, 498 insertions(+), 106 deletions(-)
+ 12 files changed, 510 insertions(+), 106 deletions(-)
 
 --- a/keepalived/include/vrrp_vmac.h
 +++ b/keepalived/include/vrrp_vmac.h
@@ -575,12 +576,13 @@ interface behaviour for the keepalived v2.2.0 release:
  	if (vrrp->family == AF_INET6 || vrrp->evip_other_family) {
 --- a/keepalived/include/vrrp_if.h
 +++ b/keepalived/include/vrrp_if.h
-@@ -207,7 +207,7 @@ typedef struct _tracked_if {
+@@ -207,7 +207,8 @@ typedef struct _tracked_if {
  #define FLAGS_UP(X) (((X) & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING))
  #define IF_FLAGS_UP(X) (FLAGS_UP((X)->ifi_flags))
  #ifdef _HAVE_VRRP_VMAC_
 -#define IF_ISUP(X) (IF_FLAGS_UP(X) && (!(X)->vmac_type || IF_FLAGS_UP((X)->base_ifp)))
-+#define IF_ISUP(X) ((X)->if_type == IF_TYPE_MACVLAN? IF_FLAGS_UP((X)->base_ifp):IF_FLAGS_UP(X))
++extern bool interface_is_up(interface_t *);
++#define IF_ISUP(X) (interface_is_up(X))
  #else
  #define IF_ISUP(X) (IF_FLAGS_UP(X))
  #endif
@@ -1029,3 +1031,23 @@ interface behaviour for the keepalived v2.2.0 release:
  	interface_t		*ifp;			/* Interface owning IP address */
  	char			*label;			/* Alias name, e.g. eth0:1 */
  #if HAVE_DECL_IFA_FLAGS
+--- a/keepalived/vrrp/vrrp_if.c
++++ b/keepalived/vrrp/vrrp_if.c
+@@ -126,6 +126,17 @@ if_get_by_vmac(uint8_t vrid, int family,
+ 
+ 	return NULL;
+ }
++
++bool
++interface_is_up(interface_t *ifp)
++{
++	if (ifp == NULL)
++		return 0;
++	else if (IF_BASE_INDEX(ifp) == IF_INDEX(ifp))
++		return IF_FLAGS_UP(ifp);
++	else
++		return interface_is_up(IF_BASE_IFP(ifp)) && (ifp->if_type == IF_TYPE_MACVLAN? 1 : IF_FLAGS_UP(ifp));
++}
+ #endif
+ 
+ interface_t *
