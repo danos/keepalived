@@ -618,7 +618,7 @@ data structures the code segfaults.
  void
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2875,6 +2875,28 @@ add_vrrp_to_track_bfd(vrrp_t *vrrp, trac
+@@ -2887,6 +2887,28 @@ add_vrrp_to_track_bfd(vrrp_t *vrrp, trac
  }
  #endif
  
@@ -647,7 +647,7 @@ data structures the code segfaults.
  #ifdef _HAVE_VRRP_VMAC_
  static interface_t *
  create_vmac_name(const char *prefix, uint8_t vrid, int family)
-@@ -2963,6 +2985,9 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -2975,6 +2997,9 @@ vrrp_complete_instance(vrrp_t * vrrp)
  	ip_route_t *route;
  	ip_rule_t *rule;
  #endif
@@ -657,7 +657,7 @@ data structures the code segfaults.
  
  	if (vrrp->strict_mode == PARAMETER_UNSET)
  		vrrp->strict_mode = global_data->vrrp_strict;
-@@ -3922,6 +3947,12 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -3934,6 +3959,12 @@ vrrp_complete_instance(vrrp_t * vrrp)
  		add_vrrp_to_track_bfd(vrrp, tbfd);
  #endif
  
@@ -670,7 +670,7 @@ data structures the code segfaults.
  	if (!vrrp->ifp || vrrp->ifp->ifindex) {
  		if (!reload && interface_already_existed) {
  			vrrp->vipset = true;	/* Set to force address removal */
-@@ -5041,6 +5072,27 @@ clear_diff_bfd(void)
+@@ -5053,6 +5084,27 @@ clear_diff_bfd(void)
  	}
  }
  #endif

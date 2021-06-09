@@ -59,19 +59,19 @@ interface behaviour for the keepalived v2.2.0 release:
    length.
 
 ---
- keepalived/core/keepalived_netlink.c |    9 -
+ keepalived/core/keepalived_netlink.c |    9 
  keepalived/include/vrrp_if.h         |    3 
  keepalived/include/vrrp_ipaddress.h  |    1 
  keepalived/include/vrrp_vmac.h       |    2 
- keepalived/vrrp/vrrp.c               |  307 ++++++++++++++++++++++++++---------
+ keepalived/vrrp/vrrp.c               |  319 +++++++++++++++++++++++++++--------
  keepalived/vrrp/vrrp_if.c            |   11 +
  keepalived/vrrp/vrrp_ipaddress.c     |   85 +++++++++
- keepalived/vrrp/vrrp_scheduler.c     |  160 +++++++++++++++---
+ keepalived/vrrp/vrrp_scheduler.c     |  160 ++++++++++++++---
  keepalived/vrrp/vrrp_track.c         |    4 
- keepalived/vrrp/vrrp_vmac.c          |   31 +++
+ keepalived/vrrp/vrrp_vmac.c          |   50 +++++
  lib/utils.c                          |    2 
  lib/utils.h                          |    1 
- 12 files changed, 510 insertions(+), 106 deletions(-)
+ 12 files changed, 541 insertions(+), 106 deletions(-)
 
 --- a/keepalived/include/vrrp_vmac.h
 +++ b/keepalived/include/vrrp_vmac.h
@@ -226,22 +226,34 @@ interface behaviour for the keepalived v2.2.0 release:
  	/* Send the packet */
  	return sendmsg(vrrp->sockets->fd_out, &msg, (peer) ? 0 : MSG_DONTROUTE);
  }
-@@ -1665,6 +1745,14 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
+@@ -1665,6 +1745,26 @@ vrrp_remove_delayed_arp(vrrp_t *vrrp)
  static void
  vrrp_state_become_master(vrrp_t * vrrp)
  {
 +
 +#ifdef _HAVE_VRRP_VMAC_
-+	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)){
-+		__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
-+		netlink_link_up(vrrp);
++	int status;
++	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
++		status = netlink_link_up(vrrp);
++		if (status != -1)
++			__set_bit(VRRP_VMAC_UP_BIT, &vrrp->vmac_flags);
++		else {
++			vrrp->num_script_if_fault++;
++			vrrp->state = vrrp->wantstate = VRRP_STATE_FAULT;
++			/* Set the down timer */
++			vrrp->master_adver_int = vrrp->adver_int;
++			vrrp->ms_down_timer = 3 * vrrp->master_adver_int + VRRP_TIMER_SKEW(vrrp);
++			vrrp_init_instance_sands(vrrp);
++			vrrp->last_transition = timer_now();
++			return;
++		}
 +	}
 +#endif
 +
  	++vrrp->stats->become_master;
  
  	if (vrrp->version == VRRP_VERSION_3 &&
-@@ -1807,6 +1895,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
+@@ -1807,6 +1907,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
  	}
  #endif
  
@@ -255,7 +267,7 @@ interface behaviour for the keepalived v2.2.0 release:
  	/* set the new vrrp state */
  	if (vrrp->wantstate == VRRP_STATE_BACK) {
  		log_message(LOG_INFO, "(%s) Entering BACKUP STATE", vrrp->iname);
-@@ -1837,9 +1932,15 @@ void
+@@ -1837,9 +1944,15 @@ void
  vrrp_state_leave_fault(vrrp_t * vrrp)
  {
  	/* set the new vrrp state */
@@ -273,7 +285,7 @@ interface behaviour for the keepalived v2.2.0 release:
  		if (vrrp->state != vrrp->wantstate)
  			log_message(LOG_INFO, "(%s) Entering %s STATE", vrrp->iname, vrrp->wantstate == VRRP_STATE_BACK ? "BACKUP" : "FAULT");
  		if (vrrp->wantstate == VRRP_STATE_FAULT && vrrp->state == VRRP_STATE_MAST) {
-@@ -2080,7 +2181,7 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
+@@ -2080,7 +2193,7 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
  
  	if (hd->priority == vrrp->effective_priority) {
  		if (addr_cmp == 0)
@@ -282,7 +294,7 @@ interface behaviour for the keepalived v2.2.0 release:
  		else if (vrrp->effective_priority == VRRP_PRIO_OWNER) {
  			/* If we are configured as the address owner (priority == 255), and we receive an advertisement
  			 * from another system indicating it is also the address owner, then there is a clear conflict.
-@@ -2366,16 +2467,44 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2366,16 +2479,44 @@ open_vrrp_read_socket(sa_family_t family
  	int fd = -1;
  	int val = rx_buf_size;
  	socklen_t len = sizeof(val);
@@ -317,8 +329,8 @@ interface behaviour for the keepalived v2.2.0 release:
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Wrong AF to open read socket",
 +			ifp->ifname);
-+		return -1;
-+	}
+ 		return -1;
+ 	}
 +
 +	/* Open PF_PACKET socket, listening for
 +	 * EtherType ETHER_TYPE
@@ -328,13 +340,13 @@ interface behaviour for the keepalived v2.2.0 release:
 +		log_message(LOG_ERR,
 +			"VRRP_Interface(%s) Could not get raw socket\n",
 +			ifp->ifname);
- 		return -1;
- 	}
++		return -1;
++	}
 +
  #if !HAVE_DECL_SOCK_CLOEXEC
  	set_sock_flags(fd, F_SETFD, FD_CLOEXEC);
  #endif
-@@ -2388,66 +2517,100 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2388,66 +2529,100 @@ open_vrrp_read_socket(sa_family_t family
  			log_message(LOG_INFO, "vrrp set receive socket buffer size error %d", errno);
  	}
  
@@ -487,7 +499,7 @@ interface behaviour for the keepalived v2.2.0 release:
  
  	/* Need to bind read socket so only process packets for interface we're
  	 * interested in.
-@@ -2455,17 +2618,12 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2455,17 +2630,12 @@ open_vrrp_read_socket(sa_family_t family
  	 * This is applicable for both unicast and multicast operation as well as
  	 * IPv4 and IPv6.
  	 */
@@ -507,7 +519,7 @@ interface behaviour for the keepalived v2.2.0 release:
  	return fd;
  }
  
-@@ -2506,6 +2664,11 @@ open_sockpool_socket(sock_t *sock)
+@@ -2506,6 +2676,11 @@ open_sockpool_socket(sock_t *sock)
  	else
  		sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
  						     sock->ifp, unicast_src_p);
@@ -521,7 +533,7 @@ interface behaviour for the keepalived v2.2.0 release:
  /* Try to find a VRRP instance */
 --- a/keepalived/vrrp/vrrp_vmac.c
 +++ b/keepalived/vrrp/vrrp_vmac.c
-@@ -164,7 +164,7 @@ remove_vmac_auto_gen_addr(interface_t *i
+@@ -164,9 +164,28 @@ remove_vmac_auto_gen_addr(interface_t *i
  }
  #endif
  
@@ -529,8 +541,29 @@ interface behaviour for the keepalived v2.2.0 release:
 +int
  netlink_link_up(vrrp_t *vrrp)
  {
++#ifdef _HAVE_VRRP_VMAC_
++	if (__test_bit(VRRP_VMAC_BIT,&vrrp->vmac_flags) && vrrp->family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED((struct in6_addr *)&vrrp->ifp->sin6_addr)) {
++		ip_address_t ipaddress;
++		memset(&ipaddress, 0, sizeof(ipaddress));
++		if (!IN6_IS_ADDR_UNSPECIFIED((struct in6_addr *)&(IF_BASE_IFP(vrrp->ifp)->sin6_addr))) {
++			ipaddress.ifp = vrrp->ifp;
++			ipaddress.u.sin6_addr = IF_BASE_IFP(vrrp->ifp)->sin6_addr;
++			ipaddress.ifa.ifa_family = AF_INET6;
++			ipaddress.ifa.ifa_prefixlen = 64;
++			ipaddress.ifa.ifa_index = vrrp->ifp->ifindex;
++			if (netlink_ipaddress(&ipaddress, IPADDRESS_ADD) != 1)
++				log_message(LOG_INFO, "(%s) adding link-local address to %s failed", vrrp->iname, vrrp->ifp->ifname);
++			vrrp->ifp->sin6_addr = IF_BASE_IFP(vrrp->ifp)->sin6_addr;
++		} else {
++			log_message(LOG_INFO, "Both RFC interface and base interface are missing their IPv6 LL, will try to bring up the VMAC once added");
++			return -1;
++		}
++	}
++#endif
  	int status = 1;
-@@ -189,6 +189,31 @@ netlink_link_up(vrrp_t *vrrp)
+ 	struct {
+ 		struct nlmsghdr n;
+@@ -189,6 +208,31 @@ netlink_link_up(vrrp_t *vrrp)
  	return status;
  }
  
@@ -562,7 +595,7 @@ interface behaviour for the keepalived v2.2.0 release:
  bool
  netlink_link_add_vmac(vrrp_t *vrrp)
  {
-@@ -411,10 +436,8 @@ netlink_link_add_vmac(vrrp_t *vrrp)
+@@ -411,10 +455,8 @@ netlink_link_add_vmac(vrrp_t *vrrp)
  		firewall_add_vmac(vrrp);
  #endif
  

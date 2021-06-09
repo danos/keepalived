@@ -862,7 +862,7 @@ not modify priority.
  		if (!reload && global_data->vrrp_startup_delay) {
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2959,6 +2959,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -2971,6 +2971,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
  	tracked_bfd_t *tbfd, *tbfd_tmp;
  #endif
  #ifdef _HAVE_FIB_ROUTING_
@@ -870,7 +870,7 @@ not modify priority.
  	ip_route_t *route;
  	ip_rule_t *rule;
  #endif
-@@ -4601,7 +4602,7 @@ vrrp_complete_init(void)
+@@ -4613,7 +4614,7 @@ vrrp_complete_init(void)
  	process_static_entries();
  
  	/* If we are tracking any routes/rules, ask netlink to monitor them */
