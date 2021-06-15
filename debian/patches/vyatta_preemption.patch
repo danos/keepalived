@@ -1,0 +1,40 @@
+Vyatta specific preemption code
+
+Code to pass Vyatta specific regressions
+
+---
+ keepalived/vrrp/vrrp.c |   16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -4862,7 +4862,15 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrr
+ 	bool added_ip_addr = false;
+ 
+ 	/* If the new state is master, we must be reloading from master */
+-	vrrp->reload_master = vrrp->state == VRRP_STATE_MAST;
++	if(vrrp->state == VRRP_STATE_MAST || (old_vrrp->state == VRRP_STATE_MAST && vrrp->nopreempt && vrrp->base_priority != old_vrrp->base_priority)) {
++		vrrp->reload_master = true;
++		vrrp->state =
++#ifdef _WITH_SNMP_VRRP
++		vrrp->configured_state =
++#endif
++		vrrp->wantstate = VRRP_STATE_MAST;
++	} else
++		vrrp->reload_master = false;
+ 
+ 	/* Save old stats */
+ 	memcpy(vrrp->stats, old_vrrp->stats, sizeof(vrrp_stats));
+@@ -4898,6 +4906,12 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrr
+ #endif
+ 	}
+ 
++	if (!vrrp->reload_master)
++		vrrp->state =
++#ifdef _WITH_SNMP_VRRP
++		vrrp->configured_state =
++#endif
++		vrrp->wantstate = VRRP_STATE_BACK;
+ 	return added_ip_addr;
+ }
+ 
