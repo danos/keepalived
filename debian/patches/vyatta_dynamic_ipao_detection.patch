@@ -28,7 +28,7 @@ Link Local source address we also check the IPv6 Global Addresses on the
 interface for matching addresses.
 
 ---
- keepalived/core/keepalived_netlink.c |   26 ++++++++++-
+ keepalived/core/keepalived_netlink.c |   23 +++++++++-
  keepalived/include/vrrp.h            |    7 +++
  keepalived/include/vrrp_track.h      |    1 
  keepalived/vrrp/vrrp.c               |   80 +++++++++++++++++++++++++++++++++--
@@ -36,7 +36,7 @@ interface for matching addresses.
  keepalived/vrrp/vrrp_dbus.c          |    2 
  keepalived/vrrp/vrrp_parser.c        |    2 
  keepalived/vrrp/vrrp_track.c         |    2 
- 8 files changed, 115 insertions(+), 7 deletions(-)
+ 8 files changed, 112 insertions(+), 7 deletions(-)
 
 --- a/keepalived/include/vrrp.h
 +++ b/keepalived/include/vrrp.h
@@ -65,7 +65,7 @@ interface for matching addresses.
  #endif
 --- a/keepalived/core/keepalived_netlink.c
 +++ b/keepalived/core/keepalived_netlink.c
-@@ -160,10 +160,32 @@ addr_is_equal2(struct ifaddrmsg* ifa, vo
+@@ -160,10 +160,29 @@ addr_is_equal2(struct ifaddrmsg* ifa, vo
  		return false;
  	if (vip_addr->ifa.ifa_family == AF_INET) {
  		sin_addr = PTR_CAST(struct in_addr, addr);
@@ -76,7 +76,7 @@ interface for matching addresses.
 +		memset((void *)&saddr, 0, sizeof(struct sockaddr_storage));
 +		inet_ip4tosockaddr(&ifp->sin_addr, &saddr);
 +		if (inet_sockaddrcmp(&saddr, &zero_addr) == 0)
-+			return vip_addr->u.sin.sin_addr.s_addr != sin_addr->s_addr;
++			return false;
  		return vip_addr->u.sin.sin_addr.s_addr == sin_addr->s_addr;
  	}
  
@@ -91,14 +91,11 @@ interface for matching addresses.
 +	inet_ip6tosockaddr(&ifp->sin6_addr, &saddr);
  	sin6_addr = PTR_CAST(struct in6_addr, addr);
 +	if (inet_sockaddrcmp(&saddr, &zero_addr6) == 0)
-+		return vip_addr->u.sin6_addr.s6_addr32[0] != sin6_addr->s6_addr32[0] &&
-+		       vip_addr->u.sin6_addr.s6_addr32[1] != sin6_addr->s6_addr32[1] &&
-+		       vip_addr->u.sin6_addr.s6_addr32[2] != sin6_addr->s6_addr32[2] &&
-+		       vip_addr->u.sin6_addr.s6_addr32[3] != sin6_addr->s6_addr32[3];
++		return false;
  	return vip_addr->u.sin6_addr.s6_addr32[0] == sin6_addr->s6_addr32[0] &&
  	       vip_addr->u.sin6_addr.s6_addr32[1] == sin6_addr->s6_addr32[1] &&
  	       vip_addr->u.sin6_addr.s6_addr32[2] == sin6_addr->s6_addr32[2] &&
-@@ -986,6 +1008,7 @@ netlink_if_address_filter(__attribute__(
+@@ -986,6 +1005,7 @@ netlink_if_address_filter(__attribute__(
  					 * and see if they can be brought up */
  					list_for_each_entry(top, &ifp->tracking_vrrp, e_list) {
  						vrrp = top->obj.vrrp;
@@ -106,7 +103,7 @@ interface for matching addresses.
  
  						if (vrrp->track_saddr && vrrp->family == ifa->ifa_family)
  							is_tracking_saddr = inaddr_equal(ifa->ifa_family, &vrrp->saddr, addr.addr);
-@@ -1112,6 +1135,7 @@ netlink_if_address_filter(__attribute__(
+@@ -1112,6 +1132,7 @@ netlink_if_address_filter(__attribute__(
  						continue;
  					if (vrrp->family != ifa->ifa_family)
  						continue;
@@ -114,7 +111,7 @@ interface for matching addresses.
  					if (!inaddr_equal(ifa->ifa_family, vrrp->family == AF_INET ? &(PTR_CAST(struct sockaddr_in, &vrrp->saddr))->sin_addr : (void *)&(PTR_CAST(struct sockaddr_in6, &vrrp->saddr))->sin6_addr, addr.addr))
  						continue;
  
-@@ -1144,7 +1168,7 @@ netlink_if_address_filter(__attribute__(
+@@ -1144,7 +1165,7 @@ netlink_if_address_filter(__attribute__(
  #ifdef _HAVE_VRRP_VMAC_
  							 vrrp->family == AF_INET ? VRRP_CONFIGURED_IFP(vrrp) :
  #endif

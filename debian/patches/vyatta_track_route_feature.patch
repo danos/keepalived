@@ -531,7 +531,7 @@ not modify priority.
  #endif
 --- a/keepalived/core/keepalived_netlink.c
 +++ b/keepalived/core/keepalived_netlink.c
-@@ -1394,6 +1394,9 @@ netlink_parse_info(int (*filter) (struct
+@@ -1391,6 +1391,9 @@ netlink_parse_info(int (*filter) (struct
  			    h->nlmsg_type != RTM_NEWLINK &&
  			    h->nlmsg_type != RTM_DELLINK &&
  			    h->nlmsg_type != RTM_NEWROUTE &&
@@ -541,7 +541,7 @@ not modify priority.
  			    nl != &nl_cmd && h->nlmsg_pid == nl_cmd.nl_pid)
  				continue;
  #endif
-@@ -2215,11 +2218,28 @@ netlink_link_filter(__attribute__((unuse
+@@ -2212,11 +2215,28 @@ netlink_link_filter(__attribute__((unuse
  }
  
  #ifdef _HAVE_FIB_ROUTING_
@@ -571,7 +571,7 @@ not modify priority.
  	size_t len;
  	vrrp_t *vrrp;
  	ip_route_t *route;
-@@ -2227,58 +2247,97 @@ netlink_route_filter(__attribute__((unus
+@@ -2224,58 +2244,97 @@ netlink_route_filter(__attribute__((unus
  	if (h->nlmsg_type != RTM_NEWROUTE && h->nlmsg_type != RTM_DELROUTE)
  		return 0;
  
@@ -702,7 +702,7 @@ not modify priority.
  	return 0;
  }
  
-@@ -2334,6 +2393,77 @@ netlink_rule_filter(__attribute__((unuse
+@@ -2331,6 +2390,77 @@ netlink_rule_filter(__attribute__((unuse
  
  	return 0;
  }
@@ -780,7 +780,7 @@ not modify priority.
  #endif
  #endif
  
-@@ -2364,9 +2494,11 @@ netlink_broadcast_filter(struct sockaddr
+@@ -2361,9 +2491,11 @@ netlink_broadcast_filter(struct sockaddr
  	case RTM_NEWROUTE:
  	case RTM_DELROUTE:
  		return netlink_route_filter(snl, h);
@@ -792,7 +792,7 @@ not modify priority.
  #endif
  	default:
  		log_message(LOG_INFO,
-@@ -2464,7 +2596,11 @@ kernel_netlink_init(void)
+@@ -2461,7 +2593,11 @@ kernel_netlink_init(void)
  #ifdef _ONE_PROCESS_DEBUG_
  #ifdef _WITH_VRRP_
  	netlink_socket(&nl_kernel, global_data->vrrp_netlink_monitor_rcv_bufs, global_data->vrrp_netlink_monitor_rcv_bufs_force,
@@ -805,7 +805,7 @@ not modify priority.
  #else
  	netlink_socket(&nl_kernel, global_data->lvs_netlink_monitor_rcv_bufs, global_data->lvs_netlink_monitor_rcv_bufs_force,
  			SOCK_NONBLOCK, RTNLGRP_IPV4_IFADDR, RTNLGRP_IPV6_IFADDR, 0);
-@@ -2473,7 +2609,11 @@ kernel_netlink_init(void)
+@@ -2470,7 +2606,11 @@ kernel_netlink_init(void)
  #ifdef _WITH_VRRP_
  	if (prog_type == PROG_TYPE_VRRP)
  		netlink_socket(&nl_kernel, global_data->vrrp_netlink_monitor_rcv_bufs, global_data->vrrp_netlink_monitor_rcv_bufs_force,

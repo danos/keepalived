@@ -53,3 +53,5 @@ vyatta_track_pathmon_feature.patch
 vyatta_check_lower_is_up.patch
 vyatta_vrf_aware.patch
 vyatta_preemption.patch
+vyatta_delayed_address_addition_bugfix.patch
+vyatta_snmp_modifications.patch

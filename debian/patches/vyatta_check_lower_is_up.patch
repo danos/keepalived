@@ -23,7 +23,7 @@ VRRP group stays up.
 
 --- a/keepalived/core/keepalived_netlink.c
 +++ b/keepalived/core/keepalived_netlink.c
-@@ -1585,11 +1585,11 @@ process_if_status_change(interface_t *if
+@@ -1582,11 +1582,11 @@ process_if_status_change(interface_t *if
  }
  
  static void
@@ -37,7 +37,7 @@ VRRP group stays up.
  		return;
  
  	if (!vrrp_data)
-@@ -1599,8 +1599,9 @@ update_interface_flags(interface_t *ifp,
+@@ -1596,8 +1596,9 @@ update_interface_flags(interface_t *ifp,
  
  	/* For an interface to be really up, any underlying interface must also be up */
  	was_up = IF_FLAGS_UP(ifp);
@@ -48,7 +48,7 @@ VRRP group stays up.
  
  	if (was_up == now_up)
  		return;
-@@ -1743,6 +1744,12 @@ netlink_if_link_populate(interface_t *if
+@@ -1740,6 +1741,12 @@ netlink_if_link_populate(interface_t *if
  	ifp->base_netns_id = -1;
  #endif
  
@@ -61,7 +61,7 @@ VRRP group stays up.
  #ifdef _HAVE_VRRP_VMAC_
  	if (tb[IFLA_LINKINFO]) {
  		parse_rtattr_nested(linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO]);
-@@ -1895,6 +1902,7 @@ netlink_if_link_filter(__attribute__((un
+@@ -1892,6 +1899,7 @@ netlink_if_link_filter(__attribute__((un
  	interface_t *ifp;
  	size_t len;
  	char *name;
@@ -69,7 +69,7 @@ VRRP group stays up.
  
  	ifi = NLMSG_DATA(h);
  
-@@ -1912,6 +1920,10 @@ netlink_if_link_filter(__attribute__((un
+@@ -1909,6 +1917,10 @@ netlink_if_link_filter(__attribute__((un
  		return -1;
  	name = (char *)RTA_DATA(tb[IFLA_IFNAME]);
  
@@ -80,7 +80,7 @@ VRRP group stays up.
  	/* Skip it if already exists */
  	ifp = if_get_by_ifname(name, IF_CREATE_NETLINK);
  
-@@ -1924,7 +1936,7 @@ netlink_if_link_filter(__attribute__((un
+@@ -1921,7 +1933,7 @@ netlink_if_link_filter(__attribute__((un
  		&& IF_INDEX(ifp) == IF_BASE_INDEX(ifp)
  #endif
  	)
@@ -89,7 +89,7 @@ VRRP group stays up.
  
  	return 0;
  }
-@@ -1989,6 +2001,7 @@ netlink_link_filter(__attribute__((unuse
+@@ -1986,6 +1998,7 @@ netlink_link_filter(__attribute__((unuse
  	list_head_t sav_tracking_vrrp;
  	list_head_t sav_e_list;
  	garp_delay_t *sav_garp_delay;
@@ -97,7 +97,7 @@ VRRP group stays up.
  
  	if (!(h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK))
  		return 0;
-@@ -2028,6 +2041,7 @@ netlink_link_filter(__attribute__((unuse
+@@ -2025,6 +2038,7 @@ netlink_link_filter(__attribute__((unuse
  			} else
  #endif
  				cleanup_lost_interface(ifp);
@@ -105,7 +105,7 @@ VRRP group stays up.
  
  #ifdef _HAVE_VRRP_VMAC_
  			/* If this was a vmac we created, create it again, so long as the underlying i/f exists */
-@@ -2088,6 +2102,9 @@ netlink_link_filter(__attribute__((unuse
+@@ -2085,6 +2099,9 @@ netlink_link_filter(__attribute__((unuse
  				}
  			}
  
@@ -115,7 +115,7 @@ VRRP group stays up.
  			if (strcmp(ifp->ifname, name)) {
  				/* The name can change, so handle that here */
  				log_message(LOG_INFO, "Interface name has changed from %s to %s", ifp->ifname, name);
-@@ -2200,7 +2217,7 @@ netlink_link_filter(__attribute__((unuse
+@@ -2197,7 +2214,7 @@ netlink_link_filter(__attribute__((unuse
  					alloc_vrrp_buffer(ifp->mtu);
  
  			/* We need to see a transition to up, so mark it down for now */
@@ -124,7 +124,7 @@ VRRP group stays up.
  		} else {
  			if (__test_bit(LOG_DETAIL_BIT, &debug))
  				log_message(LOG_INFO, "Unknown interface %s deleted", (char *)tb[IFLA_IFNAME]);
-@@ -2212,8 +2229,7 @@ netlink_link_filter(__attribute__((unuse
+@@ -2209,8 +2226,7 @@ netlink_link_filter(__attribute__((unuse
  #ifdef _HAVE_VRRP_VMAC_
  	if (IF_INDEX(ifp) == IF_BASE_INDEX(ifp))
  #endif

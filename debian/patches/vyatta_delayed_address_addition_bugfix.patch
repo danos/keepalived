@@ -1,0 +1,97 @@
+Bring VRRP instance up if address added after interface up
+
+To determine if a VRRP group should move from FAULT state into and active state
+Keepalived uses a counter of events that are stopping the transition. In vyatta
+if an interface is brought up without an address then the group is in FAULT if
+an address is then added later the group should come up. This doesn't always
+happen with RFC interfaces, the copying of the source address from the interface
+into the VRRP structure is needs to be done.
+This usually happens on a full box restart and if an interface is moved between
+VRFs (this is caused by the netlink DOWN message being received after the netlink
+UP message for the new VRF)
+
+Added code to check if the VRRP source address is null and the address being
+added is the primary address for the interface and then fudge the fault counter
+so the VRRP group comes up correctly
+
+
+
+---
+ keepalived/core/keepalived_netlink.c |   39 +++++++++++++++++++++++++++++++++++
+ keepalived/vrrp/vrrp_vmac.c          |    3 ++
+ 2 files changed, 42 insertions(+)
+
+--- a/keepalived/core/keepalived_netlink.c
++++ b/keepalived/core/keepalived_netlink.c
+@@ -1005,6 +1005,41 @@ netlink_if_address_filter(__attribute__(
+ 					 * and see if they can be brought up */
+ 					list_for_each_entry(top, &ifp->tracking_vrrp, e_list) {
+ 						vrrp = top->obj.vrrp;
++#ifdef _HAVE_VRRP_VMAC_
++						if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags) && IF_BASE_IFP(vrrp->ifp) == ifp && ifa->ifa_family == vrrp->family) {
++							struct sockaddr_storage saddr_vmac;
++							memset((void *)&saddr_vmac, 0, sizeof(struct sockaddr_storage));
++							if (ifa->ifa_family == AF_INET) {
++								struct sockaddr_in zero_addr;
++								zero_addr.sin_family = AF_INET;
++								zero_addr.sin_addr.s_addr = 0;
++								inet_ip4tosockaddr(&vrrp->ifp->sin_addr, &saddr_vmac);
++								if (inet_sockaddrcmp(&saddr_vmac, &zero_addr) == 0) {
++									vrrp->ifp->sin_addr = ifp->sin_addr;
++									if (--vrrp->num_script_if_fault < 1) vrrp->num_script_if_fault = 1;
++								}
++							}
++							if (ifa->ifa_family == AF_INET6) {
++								struct sockaddr_in6 zero_addr6;
++								zero_addr6.sin6_family = AF_INET6;
++								zero_addr6.sin6_addr.s6_addr32[0] = 0;
++								zero_addr6.sin6_addr.s6_addr32[1] = 0;
++								zero_addr6.sin6_addr.s6_addr32[2] = 0;
++								zero_addr6.sin6_addr.s6_addr32[3] = 0;
++								inet_ip6tosockaddr(&vrrp->ifp->sin6_addr, &saddr_vmac);
++								if (inet_sockaddrcmp(&saddr_vmac, &zero_addr6) == 0) {
++									if (inet_sockaddrcmp(&(vrrp->saddr), &zero_addr6) != 0) {
++										((struct sockaddr_in6 *)&(vrrp->saddr))->sin6_addr.s6_addr32[0] = 0;
++										((struct sockaddr_in6 *)&(vrrp->saddr))->sin6_addr.s6_addr32[1] = 0;
++										((struct sockaddr_in6 *)&(vrrp->saddr))->sin6_addr.s6_addr32[2] = 0;
++										((struct sockaddr_in6 *)&(vrrp->saddr))->sin6_addr.s6_addr32[3] = 0;
++										vrrp->saddr.ss_family = AF_UNSPEC;
++										vrrp->num_script_if_fault++;
++									}
++								}
++							}
++						}
++#endif
+ 						vrrp_check_for_owner_mode(vrrp);
+ 
+ 						if (vrrp->track_saddr && vrrp->family == ifa->ifa_family)
+@@ -1040,6 +1075,8 @@ netlink_if_address_filter(__attribute__(
+ 							 vrrp->saddr.ss_family == AF_UNSPEC &&
+ 							 (!vrrp->saddr_from_config || is_tracking_saddr)) {
+ 							if (add_link_local_address(vrrp->ifp, addr.in6)) {
++								if (vrrp->num_script_if_fault > 1)
++									vrrp->num_script_if_fault = 1;
+ 								inet_ip6tosockaddr(addr.in6, &vrrp->saddr);
+ 								try_up_instance(vrrp, false);
+ 							}
+@@ -2051,6 +2088,8 @@ netlink_link_filter(__attribute__((unuse
+ 				thread_add_event(master, recreate_vmac_thread, ifp, 0);
+ #endif
+ 		} else {
++			if (tb[IFLA_MASTER] && ifp->vrf_master_ifp == NULL && !FLAGS_UP(ifi->ifi_flags)) // Changing VRF of interface
++				return 0;
+ 			if (tb[IFLA_ADDRESS]) {
+ 				hw_addr_len = RTA_PAYLOAD(tb[IFLA_ADDRESS]);
+ 
+--- a/keepalived/vrrp/vrrp_vmac.c
++++ b/keepalived/vrrp/vrrp_vmac.c
+@@ -725,6 +725,9 @@ netlink_update_vrf(vrrp_t *vrrp)
+ 	if (!vrrp->ifp)
+ 		return;
+ 
++	if (!vrrp->vrf_aware)
++		return;
++
+ 	/* Don't update the VMAC if it isn't an interface we created */
+ 	if (!vrrp->ifp->is_ours) {
+ 		log_message(LOG_INFO, "BUG - Attempt to update VRF on VMAC interface %s which we didn't create", vrrp->ifp->ifname);
