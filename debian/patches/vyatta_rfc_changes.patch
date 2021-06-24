@@ -253,9 +253,9 @@ interface behaviour for the keepalived v2.2.0 release:
  	++vrrp->stats->become_master;
  
  	if (vrrp->version == VRRP_VERSION_3 &&
-@@ -1807,6 +1907,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
- 	}
- #endif
+@@ -1826,6 +1926,13 @@ vrrp_state_leave_master(vrrp_t * vrrp, b
+ 
+ 	send_instance_notifies(vrrp);
  
 +#ifdef _HAVE_VRRP_VMAC_
 +	if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags)) {
@@ -264,9 +264,9 @@ interface behaviour for the keepalived v2.2.0 release:
 +	}
 +#endif
 +
- 	/* set the new vrrp state */
- 	if (vrrp->wantstate == VRRP_STATE_BACK) {
- 		log_message(LOG_INFO, "(%s) Entering BACKUP STATE", vrrp->iname);
+ 	/* Set the down timer */
+ 	vrrp->ms_down_timer = 3 * vrrp->master_adver_int + VRRP_TIMER_SKEW(vrrp);
+ 	vrrp_init_instance_sands(vrrp);
 @@ -1837,9 +1944,15 @@ void
  vrrp_state_leave_fault(vrrp_t * vrrp)
  {
