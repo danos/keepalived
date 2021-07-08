@@ -32,11 +32,12 @@ interface for matching addresses.
  keepalived/include/vrrp.h            |    7 +++
  keepalived/include/vrrp_track.h      |    1 
  keepalived/vrrp/vrrp.c               |   80 +++++++++++++++++++++++++++++++++--
+ keepalived/vrrp/vrrp_daemon.c        |    7 +++
  keepalived/vrrp/vrrp_data.c          |    2 
  keepalived/vrrp/vrrp_dbus.c          |    2 
  keepalived/vrrp/vrrp_parser.c        |    2 
  keepalived/vrrp/vrrp_track.c         |    2 
- 8 files changed, 112 insertions(+), 7 deletions(-)
+ 9 files changed, 119 insertions(+), 7 deletions(-)
 
 --- a/keepalived/include/vrrp.h
 +++ b/keepalived/include/vrrp.h
@@ -165,16 +166,17 @@ interface for matching addresses.
  #endif
 +
 +static bool
-+vrrp_check_ipv6_globals_for_ipao(ip_address_t *vip, char * if_name)
++vrrp_check_ipv6_globals_for_ipao(ip_address_t *vip, char *if_name)
 +{
 +	struct ifaddrs *ifa;
 +
-+	if (vip->ifa.ifa_family != AF_INET6)
++	if (vip->ifa.ifa_family != AF_INET6 || IN6_IS_ADDR_LINKLOCAL(&(vip->u.sin6_addr)))
 +		return false;
 +
 +	for (ifa = global_data->local_addresses; ifa != NULL; ifa = ifa->ifa_next) {
 +		if (ifa->ifa_addr == NULL ||
 +				ifa->ifa_addr->sa_family != AF_INET6 ||
++				IN6_IS_ADDR_LINKLOCAL(&(((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr)) ||
 +				strncmp(if_name, ifa->ifa_name, IF_NAMESIZE) != 0)
 +			continue;
 +		if (inet_inaddrcmp(ifa->ifa_addr->sa_family,
@@ -202,7 +204,6 @@ interface for matching addresses.
 +	} else {
 +		inet_ip6tosockaddr(&ifp->sin6_addr, &saddr);
 +	}
-+
 +	list_for_each_entry(vip, &vrrp->vip, e_list) {
 +		if (vip->ifa.ifa_family == saddr.ss_family) {
 +			if (vip->ifa.ifa_family == AF_INET) {
@@ -213,7 +214,7 @@ interface for matching addresses.
 +				}
 +			}
 +			if (vip->ifa.ifa_family == AF_INET6) {
-+				if (vrrp_check_ipv6_globals_for_ipao(vip, IF_NAME(IF_BASE_IFP(ifp))) ||
++				if (vrrp_check_ipv6_globals_for_ipao(vip, IF_NAME(IF_BASE_IFP(vrrp->ifp))) ||
 +					(inet_inaddrcmp(vip->ifa.ifa_family,
 +									&vip->u.sin6_addr,
 +									&((struct sockaddr_in6 *)&saddr)->sin6_addr) == 0)) {
@@ -281,3 +282,19 @@ interface for matching addresses.
  				else if (ent->action == DBUS_GET_LAST_TRANSITION)
  					ent->args = g_variant_new("(u)", vrrp->last_transition.tv_sec);
  				else if (ent->action == DBUS_GET_SYNC_GROUP)
+--- a/keepalived/vrrp/vrrp_daemon.c
++++ b/keepalived/vrrp/vrrp_daemon.c
+@@ -800,6 +800,13 @@ reload_vrrp_thread(__attribute__((unused
+ 	/* Use standard scheduling while reloading */
+ 	reset_process_priorities();
+ 
++	if (!list_empty(&vrrp_data->vrrp)) {
++		vrrp_t *vrrp;
++		list_for_each_entry(vrrp, &vrrp_data->vrrp, e_list) {
++			clear_address_list(&vrrp->vip, true);
++		}
++	}
++
+ 	/* set the reloading flag */
+ 	SET_RELOAD;
+ 
