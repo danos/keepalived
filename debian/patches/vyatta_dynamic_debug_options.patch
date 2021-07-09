@@ -1,0 +1,303 @@
+---
+ keepalived/core/main.c                                 |    7 ++
+ keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template |   16 ++++
+ keepalived/include/vrrp_scheduler.h                    |    1 
+ keepalived/vrrp/vrrp.c                                 |   25 ++++++-
+ keepalived/vrrp/vrrp_dbus.c                            |   59 +++++++++++++++++
+ keepalived/vrrp/vrrp_scheduler.c                       |   33 +++++++--
+ 6 files changed, 134 insertions(+), 7 deletions(-)
+
+--- a/keepalived/core/main.c
++++ b/keepalived/core/main.c
+@@ -289,6 +289,7 @@ static char mem_err_debug;
+ #ifdef _RECVMSG_DEBUG_
+ static char recvmsg_debug;
+ static char recvmsg_debug_dump;
++static char perpacket_debug;
+ #endif
+ #ifdef _EINTR_DEBUG_
+ static char eintr_debug;
+@@ -1456,6 +1457,7 @@ initialise_debug_options(void)
+ #ifdef _RECVMSG_DEBUG_
+ 	do_recvmsg_debug = !!(recvmsg_debug & mask);
+ 	do_recvmsg_debug_dump = !!(recvmsg_debug_dump & mask);
++	do_perpacket_debug = !!(perpacket_debug & mask);
+ #endif
+ #ifdef _EINTR_DEBUG_
+ 	do_eintr_debug = !!(eintr_debug & mask);
+@@ -1546,6 +1548,7 @@ set_debug_options(const char *options)
+ #ifdef _RECVMSG_DEBUG_
+ 		recvmsg_debug = all_processes;
+ 		recvmsg_debug_dump = all_processes;
++		perpacket_debug = all_processes;
+ #endif
+ #ifdef _EINTR_DEBUG_
+ 		eintr_debug = all_processes;
+@@ -1696,6 +1699,9 @@ set_debug_options(const char *options)
+ 		case 'J':
+ 			recvmsg_debug_dump = processes;
+ 			break;
++		case 'L':
++			perpacket_debug = processes;
++			break;
+ #endif
+ #ifdef _EINTR_DEBUG_
+ 		case 'I':
+@@ -1886,6 +1892,7 @@ usage(const char *prog)
+ #ifdef _RECVMSG_DEBUG_
+ 	fprintf(stderr, "                                   G - VRRP recvmsg() debug\n");
+ 	fprintf(stderr, "                                   J - VRRP recvmsg() log rx data\n");
++	fprintf(stderr, "                                   L - VRRP Per packet debug\n");
+ #endif
+ #ifdef _EINTR_DEBUG_
+ 	fprintf(stderr, "                                   I - EINTR debugging\n");
+--- a/keepalived/include/vrrp_scheduler.h
++++ b/keepalived/include/vrrp_scheduler.h
+@@ -55,6 +55,7 @@ extern bool do_tsm_debug;
+ #ifdef _RECVMSG_DEBUG_
+ extern bool do_recvmsg_debug;
+ extern bool do_recvmsg_debug_dump;
++extern bool do_perpacket_debug;
+ #endif
+ 
+ /* extern prototypes */
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -89,6 +89,7 @@ bool do_tsm_debug;
+ #ifdef _RECVMSG_DEBUG_
+ bool do_recvmsg_debug;
+ bool do_recvmsg_debug_dump;
++bool do_perpacket_debug;
+ #endif
+ 
+ /* local variables */
+@@ -1045,7 +1046,12 @@ vrrp_dispatcher_read(sock_t *sock)
+ 				if ((auxdata->tp_status & TP_STATUS_VLAN_TPID_VALID) != 0) {
+ 					// Packets that have VLAN tags are not destined for us, the control plane strips them before
+ 					// sending them to keepalived. Ignore any that we see
+-					log_message(LOG_DEBUG, "Got a packet with a VLAN tag - dropping it before processing");
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++					if (do_perpacket_debug)
++#endif
++#endif
++						log_message(LOG_DEBUG, "Got a packet with a VLAN tag - dropping it before processing");
+ 					break;
+ 				}
+ 			}
+@@ -1114,7 +1120,12 @@ vrrp_dispatcher_read(sock_t *sock)
+ 			 */
+ 			if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
+ 				/* DROP our own packets */
+-				log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++				if (do_perpacket_debug)
++#endif
++#endif
++					log_message(LOG_DEBUG, "Packet filter picked up an IPv4 advertisement from the local box - dropping it before processing");
+ 				break;
+ 			}
+ 
+@@ -1140,7 +1151,12 @@ vrrp_dispatcher_read(sock_t *sock)
+ 			 */
+ 			if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
+ 				/* DROP our own packets */
+-				log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++				if (do_perpacket_debug)
++#endif
++#endif
++					log_message(LOG_DEBUG, "Packet filter picked up an IPv6 advertisement from the local box - dropping it before processing");
+ 				break;
+ 			}
+ 
+@@ -1151,9 +1167,14 @@ vrrp_dispatcher_read(sock_t *sock)
+ 			ip_str = ipv6_str;
+ 		}
+ 
+-		log_message(LOG_DEBUG,
+-			"VRRP_Instance(%s) - Peer Packet with src = %s, and priority %d",
+-					vrrp->iname, ip_str, hd->priority);
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++		if (do_perpacket_debug)
++#endif
++#endif
++			log_message(LOG_DEBUG,
++				"VRRP_Instance(%s) - Peer Packet with src = %s, and priority %d",
++				vrrp->iname, ip_str, hd->priority);
+ 		prev_state = vrrp->state;
+ 
+ 		if (vrrp->state == VRRP_STATE_BACK)
+--- a/keepalived/vrrp/vrrp.c
++++ b/keepalived/vrrp/vrrp.c
+@@ -98,6 +98,13 @@
+ #include "ipvswrapper.h"
+ #endif
+ 
++#ifdef _RECVMSG_DEBUG_
++#define DEBUG_RECVMSG	1
++#endif
++#ifdef _RECVMSG_DEBUG_
++bool do_perpacket_debug;
++#endif
++
+ /* VRRP IPv4 Multicast MAC */
+ unsigned char ipv4_mcast_mac[6] =
+ 	{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0x12 };
+@@ -1524,7 +1531,12 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
+ 	struct iovec iov;
+ 	char cbuf[256] __attribute__((aligned(__alignof__(struct cmsghdr))));
+ 
+-	log_message(LOG_INFO, "VRRP_Instance(%s) Send Advertisement", vrrp->iname);
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++	if (do_perpacket_debug)
++#endif
++#endif
++		log_message(LOG_INFO, "VRRP_Instance(%s) Send Advertisement", vrrp->iname);
+ 	/* Build the message data */
+ 	memset(&msg, 0, sizeof(msg));
+ 	msg.msg_iov = &iov;
+@@ -2193,7 +2205,18 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
+ 
+ 	if (hd->priority == vrrp->effective_priority) {
+ 		if (addr_cmp == 0)
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++		{
++		if (do_perpacket_debug)
++#endif
++#endif
+ 			log_message(LOG_INFO, "(%s) WARNING (DROPPING) - equal priority advert received from remote host with our IP address.", vrrp->iname);
++#ifdef DEBUG_RECVMSG
++#ifdef _RECVMSG_DEBUG_
++		}
++#endif
++#endif
+ 		else if (vrrp->effective_priority == VRRP_PRIO_OWNER) {
+ 			/* If we are configured as the address owner (priority == 255), and we receive an advertisement
+ 			 * from another system indicating it is also the address owner, then there is a clear conflict.
+--- a/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
++++ b/keepalived/dbus/org.keepalived.Vrrp1.Vrrp.xml_template
+@@ -45,6 +45,22 @@
+ 		<arg name="recv" type="s" direction="out" />
+ 		<arg name="vrid" type="y" direction="out" />
+ 	</method>
++	<!--
++	  Add a debug flag, useful for Per Packet Debugging
++	  Invoke using
++	  sudo dbus-send --system --dest=org.keepalived.Vrrp1 --type=method_call /org/keepalived/Vrrp1/Vrrp  org.keepalived.Vrrp1.Vrrp.AddDebug uint32:"1"
++	-->
++	<method name='AddDebug'>
++	  <arg type='u' name='DebugFlag'/>
++	</method>
++	<!--
++	  Remove a debug flag
++	  Invoke using
++	  sudo dbus-send --system --dest=org.keepalived.Vrrp1 --type=method_call /org/keepalived/Vrrp1/Vrrp  org.keepalived.Vrrp1.Vrrp.RemoveDebug uint32:"1"
++	-->
++	<method name='RemoveDebug'>
++	  <arg type='u' name='DebugFlag'/>
++	</method>
+ C		<!--
+ C		  CreateInstance:
+ C		  @iname: unique name for the new instance.
+--- a/keepalived/vrrp/vrrp_dbus.c
++++ b/keepalived/vrrp/vrrp_dbus.c
+@@ -69,6 +69,9 @@
+ #include "vrrp_print.h"
+ #include "vrrp_sync.h"
+ #include "vrrp_track.h"
++#ifdef _RECVMSG_DEBUG_
++#include "vrrp_scheduler.h"
++#endif
+ #include "global_data.h"
+ #include "main.h"
+ #include "logger.h"
+@@ -97,6 +100,10 @@ typedef enum dbus_action {
+ 	DBUS_GET_LAST_TRANSITION,
+ 	DBUS_GET_SYNC_GROUP,
+ 	DBUS_PATHMON_SIGNAL,
++#ifdef _RECVMSG_DEBUG_
++	DBUS_ADD_DEBUG,
++	DBUS_REMOVE_DEBUG
++#endif
+ } dbus_action_t;
+ 
+ typedef enum dbus_error {
+@@ -108,6 +115,12 @@ typedef enum dbus_error {
+ 	DBUS_GROUP_NOT_MASTER,
+ } dbus_error_t;
+ 
++#ifdef _RECVMSG_DEBUG_
++typedef enum debug_values {
++	PER_PACKET_DEBUG = 1,
++} debug_values_t;
++#endif
++
+ typedef struct dbus_queue_ent {
+ 	dbus_action_t action;
+ 	dbus_error_t reply;
+@@ -457,6 +470,26 @@ handle_method_call(__attribute__((unused
+ 			process_method_call(&ent);
+ 			g_dbus_method_invocation_return_value(invocation, ent.args);
+ 		}
++#ifdef _RECVMSG_DEBUG_
++		else if (g_strcmp0(method_name, "AddDebug") == 0) {
++			uint32_t debug_flag;
++			g_variant_get(parameters, "(u)", &debug_flag);
++			ent.action = DBUS_ADD_DEBUG;
++			ent.args = g_variant_new("(u)", debug_flag);
++			process_method_call(&ent);
++			g_variant_unref(ent.args);
++			g_dbus_method_invocation_return_value(invocation, NULL);
++		}
++		else if (g_strcmp0(method_name, "RemoveDebug") == 0) {
++			uint32_t debug_flag;
++			g_variant_get(parameters, "(u)", &debug_flag);
++			ent.action = DBUS_REMOVE_DEBUG;
++			ent.args = g_variant_new("(u)", debug_flag);
++			process_method_call(&ent);
++			g_variant_unref(ent.args);
++			g_dbus_method_invocation_return_value(invocation, NULL);
++		}
++#endif
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 		else if (g_strcmp0(method_name, "CreateInstance") == 0) {
+ 			g_variant_get(parameters, "(ssuu)", &iname, &ifname, &ent.vrid, &family);
+@@ -942,6 +975,32 @@ handle_dbus_msg(__attribute__((unused))
+ 								);
+ 			}
+ 		}
++#ifdef _RECVMSG_DEBUG_
++		else if (ent->action == DBUS_ADD_DEBUG) {
++			uint32_t debug_flag;
++			g_variant_get(ent->args, "(u)", &debug_flag);
++			switch (debug_flag) {
++			case PER_PACKET_DEBUG:
++				log_message(LOG_INFO, "Turning on per packet debug logs");
++				do_perpacket_debug = true;
++				break;
++			default:
++				log_message(LOG_INFO, "Unrecognised debug flag, ignoring");
++			}
++		}
++		else if (ent->action == DBUS_REMOVE_DEBUG) {
++			uint32_t debug_flag;
++			g_variant_get(ent->args, "(u)", &debug_flag);
++			switch (debug_flag) {
++			case PER_PACKET_DEBUG:
++				log_message(LOG_INFO, "Removing per packet debug logs");
++				do_perpacket_debug = false;
++				break;
++			default:
++				log_message(LOG_INFO, "Unrecognised debug flag, ignoring");
++			}
++		}
++#endif
+ #ifdef _WITH_DBUS_CREATE_INSTANCE_
+ 		else if (ent->action == DBUS_CREATE_INSTANCE) {
+ 			g_variant_get(ent->args, "(s)", &name);
