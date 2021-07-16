@@ -28,16 +28,16 @@ Link Local source address we also check the IPv6 Global Addresses on the
 interface for matching addresses.
 
 ---
- keepalived/core/keepalived_netlink.c |   23 +++++++++-
+ keepalived/core/keepalived_netlink.c |   23 +++++++++
  keepalived/include/vrrp.h            |    7 +++
  keepalived/include/vrrp_track.h      |    1 
- keepalived/vrrp/vrrp.c               |   80 +++++++++++++++++++++++++++++++++--
+ keepalived/vrrp/vrrp.c               |   81 +++++++++++++++++++++++++++++++++--
  keepalived/vrrp/vrrp_daemon.c        |    7 +++
  keepalived/vrrp/vrrp_data.c          |    2 
  keepalived/vrrp/vrrp_dbus.c          |    2 
  keepalived/vrrp/vrrp_parser.c        |    2 
  keepalived/vrrp/vrrp_track.c         |    2 
- 9 files changed, 119 insertions(+), 7 deletions(-)
+ 9 files changed, 120 insertions(+), 7 deletions(-)
 
 --- a/keepalived/include/vrrp.h
 +++ b/keepalived/include/vrrp.h
@@ -160,7 +160,7 @@ interface for matching addresses.
  			}
  		}
  
-@@ -5061,3 +5060,76 @@ register_vrrp_fifo_addresses(void)
+@@ -5061,3 +5060,77 @@ register_vrrp_fifo_addresses(void)
  	register_thread_address("vrrp_notify_fifo_script_exit", vrrp_notify_fifo_script_exit);
  }
  #endif
@@ -204,6 +204,7 @@ interface for matching addresses.
 +	} else {
 +		inet_ip6tosockaddr(&ifp->sin6_addr, &saddr);
 +	}
++
 +	list_for_each_entry(vip, &vrrp->vip, e_list) {
 +		if (vip->ifa.ifa_family == saddr.ss_family) {
 +			if (vip->ifa.ifa_family == AF_INET) {

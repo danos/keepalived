@@ -1,8 +1,8 @@
 ---
  keepalived/core/snmp.c         |    3 +
  keepalived/include/vrrp_snmp.h |    9 ++++
- keepalived/vrrp/vrrp_snmp.c    |   91 ++++++++++++++++++++++++++++++++++++-----
- 3 files changed, 94 insertions(+), 9 deletions(-)
+ keepalived/vrrp/vrrp_snmp.c    |   90 ++++++++++++++++++++++++++++++++++++-----
+ 3 files changed, 93 insertions(+), 9 deletions(-)
 
 --- a/keepalived/core/snmp.c
 +++ b/keepalived/core/snmp.c
@@ -73,7 +73,7 @@
 -		*var_len = sizeof PTR_CAST(struct sockaddr_in, &rt->master_saddr)->sin_addr.s_addr;
 -		return PTR_CAST2(u_char, struct sockaddr_in, &rt->master_saddr, sin_addr.s_addr);
 +		if (rt->state != VRRP_STATE_MAST) {
-+			if (rt->family == AF_INET) {
++			if (rt->master_saddr.ss_family == AF_INET) {
 +				*var_len = sizeof(struct in_addr);
 +				return PTR_CAST2(u_char, struct sockaddr_in, &rt->master_saddr, sin_addr);
 +			}
@@ -98,7 +98,7 @@
  	case VRRP_RFC_SNMP_OPER_AUTH_TYPE:
  #ifdef _WITH_VRRP_AUTH_
  		long_ret.s = rt->auth_type + 1;
-@@ -4507,14 +4531,63 @@ vrrp_handles_global_oid(void)
+@@ -4507,14 +4531,62 @@ vrrp_handles_global_oid(void)
  	return false;
  }
  
@@ -146,19 +146,18 @@
 +	if (snmp_running) {
 +		vrrp_snmp_register_mibs();
  		return;
-+	} else {
-+		/* We let the check process handle the global OID if it is running and with snmp */
-+		defer_snmp_args_t * snmp_args = (defer_snmp_args_t *)malloc(sizeof(defer_snmp_args_t));
-+		snmp_args->socket = snmp_socket_name;
-+		snmp_args->base_mib = vrrp_handles_global_oid();
-+		snmp_args->retries = 0;
-+		thread_add_event(master, vrrp_snmp_check_for_daemon, (void *)snmp_args, 0);
-+		log_message(LOG_INFO, "Check SNMP presence event added to scheduler.");
+-
 +	}
-+}
- 
--	/* We let the check process handle the global OID if it is running and with snmp */
+ 	/* We let the check process handle the global OID if it is running and with snmp */
 -	snmp_agent_init(snmp_socket_name, vrrp_handles_global_oid());
++	defer_snmp_args_t * snmp_args = (defer_snmp_args_t *)malloc(sizeof(defer_snmp_args_t));
++	snmp_args->socket = snmp_socket_name;
++	snmp_args->base_mib = vrrp_handles_global_oid();
++	snmp_args->retries = 0;
++	thread_add_event(master, vrrp_snmp_check_for_daemon, (void *)snmp_args, 0);
++	log_message(LOG_INFO, "Check SNMP presence event added to scheduler.");
++}
++
 +void
 +vrrp_snmp_register_mibs()
 +{

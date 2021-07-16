@@ -1,11 +1,11 @@
 Bring VRRP instance up if address added after interface up
 
-To determine if a VRRP group should move from FAULT state into and active state
+To determine if a VRRP group should move from FAULT state into active state
 Keepalived uses a counter of events that are stopping the transition. In vyatta
 if an interface is brought up without an address then the group is in FAULT if
 an address is then added later the group should come up. This doesn't always
 happen with RFC interfaces, the copying of the source address from the interface
-into the VRRP structure is needs to be done.
+into the VRRP structure needs to be done.
 This usually happens on a full box restart and if an interface is moved between
 VRFs (this is caused by the netlink DOWN message being received after the netlink
 UP message for the new VRF)
@@ -28,7 +28,7 @@ so the VRRP group comes up correctly
  					list_for_each_entry(top, &ifp->tracking_vrrp, e_list) {
  						vrrp = top->obj.vrrp;
 +#ifdef _HAVE_VRRP_VMAC_
-+						if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags) && IF_BASE_IFP(vrrp->ifp) == ifp && ifa->ifa_family == vrrp->family) {
++						if (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags) && (IF_BASE_IFP(vrrp->ifp) == ifp) && (ifa->ifa_family == vrrp->family)) {
 +							struct sockaddr_storage saddr_vmac;
 +							memset((void *)&saddr_vmac, 0, sizeof(struct sockaddr_storage));
 +							if (ifa->ifa_family == AF_INET) {
