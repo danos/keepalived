@@ -63,15 +63,7 @@
  /* extern prototypes */
 --- a/keepalived/vrrp/vrrp_scheduler.c
 +++ b/keepalived/vrrp/vrrp_scheduler.c
-@@ -89,6 +89,7 @@ bool do_tsm_debug;
- #ifdef _RECVMSG_DEBUG_
- bool do_recvmsg_debug;
- bool do_recvmsg_debug_dump;
-+bool do_perpacket_debug;
- #endif
- 
- /* local variables */
-@@ -1045,7 +1046,12 @@ vrrp_dispatcher_read(sock_t *sock)
+@@ -1045,7 +1045,12 @@ vrrp_dispatcher_read(sock_t *sock)
  				if ((auxdata->tp_status & TP_STATUS_VLAN_TPID_VALID) != 0) {
  					// Packets that have VLAN tags are not destined for us, the control plane strips them before
  					// sending them to keepalived. Ignore any that we see
@@ -85,7 +77,7 @@
  					break;
  				}
  			}
-@@ -1114,7 +1120,12 @@ vrrp_dispatcher_read(sock_t *sock)
+@@ -1114,7 +1119,12 @@ vrrp_dispatcher_read(sock_t *sock)
  			 */
  			if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
  				/* DROP our own packets */
@@ -99,7 +91,7 @@
  				break;
  			}
  
-@@ -1140,7 +1151,12 @@ vrrp_dispatcher_read(sock_t *sock)
+@@ -1140,7 +1150,12 @@ vrrp_dispatcher_read(sock_t *sock)
  			 */
  			if (our_address && ((hd->priority != VRRP_PRIO_OWNER && hd->priority >= vrrp->effective_priority) || hd->priority == VRRP_PRIO_STOP)) {
  				/* DROP our own packets */
@@ -113,7 +105,7 @@
  				break;
  			}
  
-@@ -1151,9 +1167,14 @@ vrrp_dispatcher_read(sock_t *sock)
+@@ -1151,9 +1166,14 @@ vrrp_dispatcher_read(sock_t *sock)
  			ip_str = ipv6_str;
  		}
  
