@@ -118,7 +118,7 @@
  dbus_create_object(vrrp_t *vrrp)
  {
 -	dbus_create_object_params(vrrp->iname, vrrp->ifp ? IF_NAME(VRRP_CONFIGURED_IFP(vrrp)) : no_interface, vrrp->vrid, vrrp->family, false);
-+	dbus_create_object_params(vrrp->iname, vrrp->ifp ? (IF_INDEX(vrrp->ifp) != IF_BASE_INDEX(vrrp->ifp)? IF_BASE_IFP(vrrp->ifp) : vrrp->ifp) : no_interface, vrrp->vrid, vrrp->family, false);
++	dbus_create_object_params(vrrp->iname, vrrp->ifp ? IF_BASE_IFP(vrrp->ifp) : no_interface, vrrp->vrid, vrrp->family, false);
  }
  
  static bool
