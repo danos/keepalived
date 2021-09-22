@@ -6,11 +6,11 @@ created in either the base interface's VRF or in the default global interface
 
 ---
  keepalived/include/vrrp.h     |    3 +++
- keepalived/vrrp/vrrp.c        |    8 ++++++++
+ keepalived/vrrp/vrrp.c        |   22 ++++++++++++++++++++++
  keepalived/vrrp/vrrp_data.c   |    3 +++
  keepalived/vrrp/vrrp_parser.c |   12 ++++++++++++
  keepalived/vrrp/vrrp_vmac.c   |    2 +-
- 5 files changed, 27 insertions(+), 1 deletion(-)
+ 5 files changed, 41 insertions(+), 1 deletion(-)
 
 --- a/keepalived/vrrp/vrrp_vmac.c
 +++ b/keepalived/vrrp/vrrp_vmac.c
@@ -19,7 +19,7 @@ created in either the base interface's VRF or in the default global interface
  		/* If the underlying interface is enslaved to a VRF master, then this
  		 * interface should be as well. */
 -		if (vrrp->configured_ifp->vrf_master_ifp)
-+		if (vrrp->vrf_aware && vrrp->configured_ifp->vrf_master_ifp)
++		if (vrrp->vrf_aware && (__test_bit(VRRP_VMAC_BIT, &vrrp->vmac_flags) && IF_BASE_IFP(vrrp->ifp)->vrf_master_ifp))
  			addattr32(&req.n, sizeof(req), IFLA_MASTER, vrrp->configured_ifp->vrf_master_ifp->ifindex);
  #endif
  
@@ -52,6 +52,27 @@ created in either the base interface's VRF or in the default global interface
  #endif
  
  	/* If the interface doesn't support multicast, then we need to use unicast */
+@@ -3472,6 +3480,20 @@ vrrp_complete_instance(vrrp_t * vrrp)
+ 									, vrrp->iname
+ 									, vrrp->vmac_ifname
+ 									, ifp->ifname, ifp->ifname);
++				} else if (vrrp->vmac_ifname[0] &&
++					    !strcmp(vrrp->vmac_ifname, ifp->ifname)) {
++					if (reload && ifp->is_ours) {
++						list_for_each_entry(old_vrrp, &old_vrrp_data->vrrp, e_list) {
++							if (old_vrrp->vrf_aware != vrrp->vrf_aware) {
++								log_message(LOG_INFO,
++									"(%s) Deleting old VMAC interface %s, to be recreated in new VRF later",
++									vrrp->iname, ifp->ifname);
++								netlink_link_del_vmac(old_vrrp);
++								old_vmac_deleted = true;
++								break;
++							}
++						}
++					}
+ 				}
+ 
+ 				if (!old_vmac_deleted) {
 --- a/keepalived/vrrp/vrrp_data.c
 +++ b/keepalived/vrrp/vrrp_data.c
 @@ -697,6 +697,9 @@ dump_vrrp(FILE *fp, const vrrp_t *vrrp)
