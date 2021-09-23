@@ -1,3 +1,53 @@
+keepalived (2.2.0-vyatta2) unstable; urgency=medium
+
+  * Bugfix/Use base interface to create DBus paths
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Thu, 23 Sep 2021 09:31:47 +0100
+
+keepalived (2.2.0-vyatta1) unstable; urgency=medium
+
+  [ Anthony Dempsey ]
+  * Bugfix/Fix unneeded vmac up on resignation
+  * Bugfix/Fix unneeded vmac up on resignation
+  * Bugfix/Ignore own packets on restart
+  * 1.2.24-git66c870aa+vyatta35
+  * Bugfix/Correct use of ifps for finding RFC base if
+  * Bugfix/Add code to bring RFC intf up/down
+  * Add extra data structures required by Vyatta
+
+  [ Nicholas Brown ]
+  * dh-systemd is part of debhelper
+
+  [ Anthony Dempsey ]
+  * Bugfix/Apply BPF to interface to receive VRRP adv
+  * Bugfix/Stop incorrect removal of IP route with RFC
+  * Bugfix/Clean up patches that have been merged
+  * Bugfix/PR comment fix ups
+  * Bugfix/Replace IPv6 cmsg code with IPv6 hdr checks
+
+  [ Colin Docherty ]
+  * 1.2.24-git66c870aa+vyatta36
+
+  [ Anthony Dempsey ]
+  * Refactor/Minor changes to intf tracking printing
+  * Add dynamic IP address owner mode detection
+  * Allow VRRP group BACKUP reset with DBus call
+  * Add IPv4 routes as trackable objects
+  * Add path-monitor instances as trackable objects
+  * Refactor/Add carrier is up interface check patch
+  * Bugfix/IPv6 RFC LL removed on master->backup chge
+  * Refactor/Ignore base intf VRF in vmac creation
+  * Bugfix/preemption fix
+  * Bugfix/address addition after UP causes fault
+  * Bugfix/rfc preempt delay send zero pri
+  * Bugfix/IPv6 Global IPAO issue on restart
+  * Add DBus commands to modify debug flags
+  * Remove unneeded patches
+  * Review/PR comment fixes
+  * Post-merge changelog fix up
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Wed, 18 Aug 2021 14:29:33 +0100
+
 keepalived (2.2.0-vyatta0.2) unstable; urgency=medium
 
   * Bugfix/minimum changes to run acceptance tests
