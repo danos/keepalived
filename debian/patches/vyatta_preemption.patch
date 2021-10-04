@@ -3,8 +3,9 @@ Vyatta specific preemption code
 Code to pass Vyatta specific regressions
 
 ---
- keepalived/vrrp/vrrp.c |   16 +++++++++++++++-
- 1 file changed, 15 insertions(+), 1 deletion(-)
+ keepalived/core/keepalived_netlink.c |    4 ++--
+ keepalived/vrrp/vrrp.c               |   16 +++++++++++++++-
+ 2 files changed, 17 insertions(+), 3 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
@@ -38,3 +39,16 @@ Code to pass Vyatta specific regressions
  	return added_ip_addr;
  }
  
+--- a/keepalived/core/keepalived_netlink.c
++++ b/keepalived/core/keepalived_netlink.c
+@@ -1201,8 +1201,8 @@ netlink_if_address_filter(__attribute__(
+ 						    , addr_str, h->nlmsg_type == RTM_NEWADDR ? "added to" : "removed from", ifp->ifname);
+ 			}
+ 
+-			/* If one of our VIPs/eVIPs has been deleted, transition to backup */
+-			if (address_vrrp && address_vrrp->state == VRRP_STATE_MAST) {
++			/* If one of our VIPs/eVIPs has been deleted, transition to backup so long as preempt isn't disabled */
++			if (address_vrrp && address_vrrp->state == VRRP_STATE_MAST && !address_vrrp->nopreempt) {
+ 				set_vrrp_backup(address_vrrp);
+ 			}
+ 		}
