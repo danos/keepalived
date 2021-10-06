@@ -1,0 +1,39 @@
+Don't reduce sync fault count below zero, this causes issues with later state changes
+
+Multiple calls to try_up_instance can set the sync fault counter to less than zero/max unsigned
+and causes later sync group fault changes to not propagate through the syncgroup
+
+Updated the syncgroup fault counter to be an integer and to reset it to zero if
+it ever goes below zero
+
+---
+ keepalived/include/vrrp.h        |    2 +-
+ keepalived/vrrp/vrrp_scheduler.c |    5 ++++-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+--- a/keepalived/include/vrrp.h
++++ b/keepalived/include/vrrp.h
+@@ -107,7 +107,7 @@ typedef struct _vrrp_sgroup {
+ 	const char		*gname;			/* Group name */
+ 	const vector_t		*iname;			/* Set of VRRP instances in this group, only used during initialisation */
+ 	list_head_t		vrrp_instances;		/* vrrp_t - VRRP instances */
+-	unsigned		num_member_fault;	/* Number of members of group in fault state */
++	int				num_member_fault;	/* Number of members of group in fault state */
+ 	unsigned		num_member_init;	/* Number of members of group in pending state */
+ 	int			state;			/* current stable state */
+ 	bool			state_same_at_reload;	/* State prior to reload */
+--- a/keepalived/vrrp/vrrp_scheduler.c
++++ b/keepalived/vrrp/vrrp_scheduler.c
+@@ -669,8 +669,11 @@ try_up_instance(vrrp_t *vrrp, bool leavi
+ 			if (vrrp->sync->num_member_fault)
+ 				return;
+ 		}
+-		else if (--vrrp->sync->num_member_fault || vrrp->sync->num_member_init)
++		else if (--vrrp->sync->num_member_fault || vrrp->sync->num_member_init) {
++			if (vrrp->sync->num_member_fault < 0)
++				vrrp->sync->num_member_fault = 0;
+ 			return;
++		}
+ 	}
+ 
+ 	/* If the sync group can't go to master, we must go to backup state */

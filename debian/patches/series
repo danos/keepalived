@@ -20,3 +20,4 @@ vyatta_preemption.patch
 vyatta_delayed_address_addition_bugfix.patch
 vyatta_snmp_modifications.patch
 vyatta_dynamic_debug_options.patch # Could be pushed upstream
+vyatta_sync_group_modifications.patch
