@@ -1,3 +1,11 @@
+keepalived (2.2.0-vyatta3) unstable; urgency=medium
+
+  * Bugfix/Silence incorrect log warning
+  * Bugfix/IPv6 BACKUP switch when VIP removed
+  * Bugfix/VRRP SyncGroup fault counting issue
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Thu, 07 Oct 2021 18:10:49 +0100
+
 keepalived (2.2.0-vyatta2) unstable; urgency=medium
 
   * Bugfix/Use base interface to create DBus paths
