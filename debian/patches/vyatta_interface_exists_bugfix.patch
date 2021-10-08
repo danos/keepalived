@@ -1,0 +1,62 @@
+---
+ keepalived/core/keepalived_netlink.c |    2 +-
+ keepalived/include/vrrp_if.h         |    1 +
+ keepalived/vrrp/vrrp_if.c            |    6 +++++-
+ keepalived/vrrp/vrrp_track.c         |    9 +++++++++
+ 4 files changed, 16 insertions(+), 2 deletions(-)
+
+--- a/keepalived/core/keepalived_netlink.c
++++ b/keepalived/core/keepalived_netlink.c
+@@ -2243,7 +2243,7 @@ netlink_link_filter(__attribute__((unuse
+ 
+ 			if (__test_bit(LOG_DETAIL_BIT, &debug))
+ 				log_message(LOG_INFO, "Interface %s added", ifp->ifname);
+-
++			ifp->created = true;
+ 			update_added_interface(ifp);
+ 
+ #ifndef _ONE_PROCESS_DEBUG_
+--- a/keepalived/vrrp/vrrp_if.c
++++ b/keepalived/vrrp/vrrp_if.c
+@@ -230,8 +230,12 @@ if_get_by_ifname(const char *ifname, if_
+ 	INIT_LIST_HEAD(&ifp->e_list);
+ 	list_add_tail(&ifp->e_list, &if_queue);
+ 
+-	if (create == IF_CREATE_IF_DYNAMIC)
++	if (create == IF_CREATE_IF_DYNAMIC) {
+ 		log_message(LOG_INFO, "Configuration specifies interface %s which doesn't currently exist - will use if created", ifname);
++		ifp->created = false;
++	} else {
++		ifp->created = true;
++	}
+ 
+ 	return ifp;
+ }
+--- a/keepalived/vrrp/vrrp_track.c
++++ b/keepalived/vrrp/vrrp_track.c
+@@ -1065,6 +1065,15 @@ initialise_interface_tracking_priorities
+ 	list_for_each_entry(ifp, ifq, e_list) {
+ 		list_for_each_entry(top, &ifp->tracking_vrrp, e_list) {
+ 			vrrp = top->obj.vrrp;
++			/*
++			 * Non-vmac interfaces that haven't been created yet (VIF or bonding) get counted here as down
++			 * and once again when they are actually created but with no corresponding num_script_if_fault--
++			 * To avoid getting stuck in FAULT state don't count interfaces that haven't been created yet
++			 */
++			if (IF_BASE_IFP(ifp) == ifp && !ifp->created) {
++				log_message(LOG_INFO, "Got an interface that hasn't been created yet, skipping");
++				continue;
++			}
+ 			if (top->weight == VRRP_NOT_TRACK_IF)
+ 				continue;
+ 
+--- a/keepalived/include/vrrp_if.h
++++ b/keepalived/include/vrrp_if.h
+@@ -176,6 +176,7 @@ typedef struct _interface {
+ 	bool			promote_secondaries;	/* Original value of promote_secondaries to be restored */
+ 	uint32_t		reset_promote_secondaries; /* Count of how many vrrps have changed promote_secondaries on interface */
+ 	bool			carrier_is_up;		/* Carrier for interface is up (useful for bonded interfaces) */
++	bool			created;			/* Has the interface been created yet */
+ 	list_head_t		tracking_vrrp;		/* tracking_obj_t - vrrp instances tracking this interface */
+ 
+ 	/* linked list member */
