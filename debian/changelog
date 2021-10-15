@@ -1,3 +1,9 @@
+keepalived (2.2.0-vyatta4) unstable; urgency=medium
+
+  * Bugfix/correct fault count for intf creation
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Fri, 15 Oct 2021 14:19:27 +0100
+
 keepalived (2.2.0-vyatta3) unstable; urgency=medium
 
   * Bugfix/Silence incorrect log warning
