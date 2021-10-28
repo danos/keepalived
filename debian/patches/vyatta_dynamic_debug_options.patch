@@ -136,7 +136,7 @@
  /* VRRP IPv4 Multicast MAC */
  unsigned char ipv4_mcast_mac[6] =
  	{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0x12 };
-@@ -1524,7 +1528,10 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
+@@ -1530,7 +1534,10 @@ vrrp_send_pkt(vrrp_t * vrrp, unicast_pee
  	struct iovec iov;
  	char cbuf[256] __attribute__((aligned(__alignof__(struct cmsghdr))));
  
@@ -148,7 +148,7 @@
  	/* Build the message data */
  	memset(&msg, 0, sizeof(msg));
  	msg.msg_iov = &iov;
-@@ -2193,7 +2200,14 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
+@@ -2199,7 +2206,14 @@ vrrp_state_master_rx(vrrp_t * vrrp, cons
  
  	if (hd->priority == vrrp->effective_priority) {
  		if (addr_cmp == 0)

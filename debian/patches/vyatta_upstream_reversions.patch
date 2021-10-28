@@ -1,12 +1,33 @@
 ---
- keepalived/vrrp/vrrp.c        |    4 ++--
+ keepalived/vrrp/vrrp.c        |   18 ++++++++++++------
  keepalived/vrrp/vrrp_data.c   |    2 +-
  keepalived/vrrp/vrrp_parser.c |    5 +++--
- 3 files changed, 6 insertions(+), 5 deletions(-)
+ 3 files changed, 16 insertions(+), 9 deletions(-)
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2813,7 +2813,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -266,10 +266,16 @@ check_vrrp_script_security(void)
+ 	if (global_data->vrrp_notify_fifo.script)
+ 		script_flags |= check_notify_script_secure(&global_data->vrrp_notify_fifo.script, magic);
+ 
+-	if (!script_security && script_flags & SC_ISSCRIPT) {
+-		report_config_error(CONFIG_SECURITY_ERROR, "SECURITY VIOLATION - scripts are being executed but script_security not enabled.%s",
+-				script_flags & SC_INSECURE ? " There are insecure scripts." : "");
+-	}
++	/*
++	 * Removing this log message until IPSEC moves to VCI notifications and notify config is made redundant.
++	 * Without the new enable_script_security config this prints a cosmetic log that may worry operators
++	 * unnecessarily.
++	 * VRVDR-47794 tracks this IPSEC work
++	 * if (!script_security && script_flags & SC_ISSCRIPT) {
++	 *	report_config_error(CONFIG_SECURITY_ERROR, "SECURITY VIOLATION - scripts are being executed but script_security not enabled.%s",
++	 *			script_flags & SC_INSECURE ? " There are insecure scripts." : "");
++	 *}
++	 */
+ 
+ 	if (magic)
+ 		ka_magic_close(magic);
+@@ -2813,7 +2819,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
  			vrrp->version = VRRP_VERSION_3;
  		}
  		else if (!vrrp->version)
@@ -15,7 +36,7 @@
  	}
  
  	/* Default to IPv4. This can only happen if no VIPs are specified. */
-@@ -2826,7 +2826,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -2826,7 +2832,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
  		have_ipv6_instance = true;
  
  	if (vrrp->version == 0) {

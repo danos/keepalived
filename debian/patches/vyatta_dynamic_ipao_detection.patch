@@ -132,7 +132,7 @@ interface for matching addresses.
  #endif
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -2540,8 +2540,6 @@ open_vrrp_read_socket(sa_family_t family
+@@ -2546,8 +2546,6 @@ open_vrrp_read_socket(sa_family_t family
  		close(fd);
  		return -1;
  	}
@@ -141,7 +141,7 @@ interface for matching addresses.
  	/*
  	 * Bind to device - have to use bind() here as we're using a
  	 * packet socket, see packet(7)
-@@ -3188,6 +3186,8 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -3194,6 +3192,8 @@ vrrp_complete_instance(vrrp_t * vrrp)
  		vrrp->nopreempt = false;
  	}
  
@@ -150,7 +150,7 @@ interface for matching addresses.
  	vrrp->effective_priority = vrrp->base_priority;
  	vrrp->total_priority = vrrp->base_priority;
  
-@@ -4698,8 +4698,7 @@ vrrp_complete_init(void)
+@@ -4704,8 +4704,7 @@ vrrp_complete_init(void)
  				if (vrrp->state == VRRP_STATE_FAULT || vrrp->num_script_init)
  					continue;
  
@@ -160,7 +160,7 @@ interface for matching addresses.
  			}
  		}
  
-@@ -5061,3 +5060,77 @@ register_vrrp_fifo_addresses(void)
+@@ -5067,3 +5066,77 @@ register_vrrp_fifo_addresses(void)
  	register_thread_address("vrrp_notify_fifo_script_exit", vrrp_notify_fifo_script_exit);
  }
  #endif
