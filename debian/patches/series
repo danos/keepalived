@@ -50,3 +50,4 @@ defer_intf_creation.patch
 ## CVE fix from upstream
 security_fix_tmp_files.patch
 configure_tmp_file_path.patch
+sync_group_fix.patch
