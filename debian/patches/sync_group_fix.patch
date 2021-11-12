@@ -1,0 +1,26 @@
+---
+ keepalived/vrrp/vrrp_print.c |   13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+--- a/keepalived/vrrp/vrrp_print.c
++++ b/keepalived/vrrp/vrrp_print.c
+@@ -64,8 +64,17 @@ vgroup_print(FILE *file, void *data)
+ 	char *str;
+ 
+ 	vrrp_sgroup_t *vgroup = data;
+-	fprintf(file, " VRRP Sync Group = %s, %s\n", vgroup->gname,
+-		(vgroup->state == VRRP_STATE_MAST) ? "MASTER" : "BACKUP");
++	char *state;
++	if (vgroup->state == VRRP_STATE_MAST)
++		state = "MASTER";
++	else if (vgroup->state == VRRP_STATE_BACK)
++		state = "BACKUP";
++	else if (vgroup->state == VRRP_STATE_FAULT)
++		state = "FAULT";
++	else
++		state = "UNKNOWN";
++
++	fprintf(file, " VRRP Sync Group = %s, %s\n", vgroup->gname, state);
+ 	for (i = 0; i < vector_size(vgroup->iname); i++) {
+ 		str = vector_slot(vgroup->iname, i);
+ 		fprintf(file, "   monitor = %s\n", str);
