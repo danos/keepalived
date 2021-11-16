@@ -52,7 +52,7 @@ created in either the base interface's VRF or in the default global interface
  #endif
  
  	/* If the interface doesn't support multicast, then we need to use unicast */
-@@ -3472,6 +3480,20 @@ vrrp_complete_instance(vrrp_t * vrrp)
+@@ -3478,6 +3486,20 @@ vrrp_complete_instance(vrrp_t * vrrp)
  									, vrrp->iname
  									, vrrp->vmac_ifname
  									, ifp->ifname, ifp->ifname);
@@ -60,7 +60,7 @@ created in either the base interface's VRF or in the default global interface
 +					    !strcmp(vrrp->vmac_ifname, ifp->ifname)) {
 +					if (reload && ifp->is_ours) {
 +						list_for_each_entry(old_vrrp, &old_vrrp_data->vrrp, e_list) {
-+							if (old_vrrp->vrf_aware != vrrp->vrf_aware) {
++							if (!strncmp(vrrp->iname, old_vrrp->iname, strlen(vrrp->iname)) && old_vrrp->vrf_aware != vrrp->vrf_aware) {
 +								log_message(LOG_INFO,
 +									"(%s) Deleting old VMAC interface %s, to be recreated in new VRF later",
 +									vrrp->iname, ifp->ifname);

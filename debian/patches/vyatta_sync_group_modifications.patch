@@ -24,7 +24,7 @@ it ever goes below zero
  	bool			state_same_at_reload;	/* State prior to reload */
 --- a/keepalived/vrrp/vrrp_scheduler.c
 +++ b/keepalived/vrrp/vrrp_scheduler.c
-@@ -669,8 +669,11 @@ try_up_instance(vrrp_t *vrrp, bool leavi
+@@ -668,8 +668,11 @@ try_up_instance(vrrp_t *vrrp, bool leavi
  			if (vrrp->sync->num_member_fault)
  				return;
  		}

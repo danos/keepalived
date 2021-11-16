@@ -9,7 +9,7 @@ Code to pass Vyatta specific regressions
 
 --- a/keepalived/vrrp/vrrp.c
 +++ b/keepalived/vrrp/vrrp.c
-@@ -4868,7 +4868,15 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrr
+@@ -4882,7 +4882,15 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrr
  	bool added_ip_addr = false;
  
  	/* If the new state is master, we must be reloading from master */
@@ -26,7 +26,7 @@ Code to pass Vyatta specific regressions
  
  	/* Save old stats */
  	memcpy(vrrp->stats, old_vrrp->stats, sizeof(vrrp_stats));
-@@ -4904,6 +4912,12 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrr
+@@ -4918,6 +4926,12 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrr
  #endif
  	}
  
