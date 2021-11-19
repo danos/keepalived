@@ -1,3 +1,9 @@
+keepalived (1.2.24-git66c870aa+vyatta35.1) unstable; urgency=medium
+
+  * Bugfix/Expand reported states for syncgroups
+
+ -- Anthony Dempsey <anthony.dempsey@intl.att.com>  Fri, 19 Nov 2021 16:31:12 +0000
+
 keepalived (1.2.24-git66c870aa+vyatta35) unstable; urgency=medium
 
   * Security/Allow configuration of tmp files path
